@@ -1,3 +1,5 @@
+import type { PreambleState } from "./narrative/preamble/model"
+
 export const FORM_CODE = "16.02.00.003.04"
 export const FORM_TITLE = "Superintendent's Detailed Inspection Report"
 
@@ -377,6 +379,13 @@ export type Rating = (typeof RATINGS)[number]["value"] | ""
 
 export type ConditionEntry = { rating: Rating; remarks: string }
 
+/**
+ * Structured inputs behind generated narrative sections (see lib/narrative). The generated text itself is also
+ * written to the matching plain field (e.g. `summary.preamble`), which the PDF and summaries already read.
+ * Older reports have no `narratives`; treat it as optional everywhere.
+ */
+export type Narratives = { preamble?: PreambleState }
+
 const CONDITION_RISK_POINTS = {
   good: 20,
   fair: 40,
@@ -417,6 +426,7 @@ export type Report = {
     superintendentName: string
     superintendentSignature: string
   }
+  narratives?: Narratives
   deletedPhotoIds: string[]
 }
 
@@ -447,6 +457,7 @@ export function createEmptyReport(id: string): Report {
     engine: {},
     management: {},
     signoff: { inspectorSignature: "", superintendentName: "", superintendentSignature: "" },
+    narratives: {},
     deletedPhotoIds: [],
   }
 }

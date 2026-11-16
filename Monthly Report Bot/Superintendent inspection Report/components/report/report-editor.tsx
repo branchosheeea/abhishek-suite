@@ -16,7 +16,6 @@ import {
   MANAGEMENT_SECTION_GROUPS,
   PARTICULARS_GROUPS,
   SECTIONS,
-  SUMMARY_FIELDS,
   overallProgress,
   sectionProgress,
   type ConditionEntry,
@@ -30,11 +29,13 @@ import { PhotosSection } from "./photos-section"
 import { ScopeSection } from "./scope-section"
 import { SectionNav } from "./section-nav"
 import { SignoffSection } from "./signoff-section"
+import { SummarySection } from "./summary-section"
+import { vesselIdFor } from "@/lib/vessels"
 
 const DESCRIPTIONS: Partial<Record<SectionId, string>> = {
   details: "Who inspected which vessel, where and when.",
   particulars: "Key particulars of the vessel. Pre-fill once and reuse for future inspections.",
-  summary: "High-level findings for owners and management.",
+  summary: "Build the preamble from structured selections, then record the high-level findings for owners and management.",
   scope: "Tick every area covered during this inspection.",
   hull: "Inspect hull structure, coating, markings, and record findings.",
   mainDeck: "Inspect the main deck and record findings.",
@@ -56,7 +57,7 @@ const DESCRIPTIONS: Partial<Record<SectionId, string>> = {
 type StringKeys = "details" | "particulars" | "summary" | "management"
 
 export function ReportEditor({ id }: { id: string }) {
-  const { report, photos, isLoading, saveState, update, addPhoto, updatePhoto, removePhoto } = useReportEditor(id)
+  const { report, photos, isLoading, saveState, update, saveNow, addPhoto, updatePhoto, removePhoto } = useReportEditor(id)
   const [active, setActive] = useState<SectionId>("details")
   const [exporting, setExporting] = useState(false)
   const topRef = useRef<HTMLDivElement>(null)
@@ -74,7 +75,11 @@ export function ReportEditor({ id }: { id: string }) {
   }
 
   const setString = (section: StringKeys) => (key: string, value: string) =>
-    update((r) => ({ ...r, [section]: { ...r[section], [key]: value } }))
+    update((r) => ({
+      ...r,
+      // The vessel id (fleet vessel or "OTHER") is kept next to the name wherever the name is edited.
+      [section]: { ...r[section], [key]: value, ...(section === "details" && key === "vessel" ? { vesselId: vesselIdFor(value) } : {}) },
+    }))
 
   const setCondition = (section: "deck" | "engine") => (key: string, entry: ConditionEntry) =>
     update((r) => ({ ...r, [section]: { ...r[section], [key]: entry } }))
@@ -156,6 +161,7 @@ export function ReportEditor({ id }: { id: string }) {
             setString={setString}
             setCondition={setCondition}
             update={update}
+            saveNow={saveNow}
             addPhoto={addPhoto}
             updatePhoto={updatePhoto}
             removePhoto={removePhoto}
@@ -191,12 +197,13 @@ type BodyProps = {
   setString: (s: StringKeys) => (key: string, value: string) => void
   setCondition: (s: "deck" | "engine") => (key: string, entry: ConditionEntry) => void
   update: ReturnType<typeof useReportEditor>["update"]
+  saveNow: ReturnType<typeof useReportEditor>["saveNow"]
   addPhoto: ReturnType<typeof useReportEditor>["addPhoto"]
   updatePhoto: ReturnType<typeof useReportEditor>["updatePhoto"]
   removePhoto: ReturnType<typeof useReportEditor>["removePhoto"]
 }
 
-function SectionBody({ active, report, photos, setString, setCondition, update, addPhoto, updatePhoto, removePhoto }: BodyProps) {
+function SectionBody({ active, report, photos, setString, setCondition, update, saveNow, addPhoto, updatePhoto, removePhoto }: BodyProps) {
   switch (active) {
     case "details":
       return <FieldGroups groups={DETAILS_GROUPS} values={report.details} idPrefix="details" onChange={setString("details")} />
@@ -205,7 +212,7 @@ function SectionBody({ active, report, photos, setString, setCondition, update, 
         <FieldGroups groups={PARTICULARS_GROUPS} values={report.particulars} idPrefix="particulars" onChange={setString("particulars")} />
       )
     case "summary":
-      return <FieldGroups groups={[{ fields: SUMMARY_FIELDS }]} values={report.summary} idPrefix="summary" onChange={setString("summary")} />
+      return <SummarySection report={report} update={update} saveNow={saveNow} onChange={setString("summary")} />
     case "scope":
       return <ScopeSection values={report.scope} onChange={(scope) => update((r) => ({ ...r, scope }))} />
     case "hull": case "mainDeck": case "cargoBallast": case "deckMachinery": case "accommodation": case "safety": case "navigation": case "engine": {

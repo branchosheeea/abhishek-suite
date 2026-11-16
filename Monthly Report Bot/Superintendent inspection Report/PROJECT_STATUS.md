@@ -18,6 +18,7 @@ This is an offline-first web app for preparing Superintendent's Detailed Inspect
 - Updated condition tables so each inspection item and rating has a compact heading row, with its remarks/findings spanning the full page width beneath it.
 - Set narrative cells and table headers to left alignment and applied consistent shared table defaults for typography, padding, borders, and header styling.
 - Removed source-report page-header and form-code artifacts from exported narrative text only; the locally stored report content is unchanged.
+- Added the Executive Summary – Preamble builder (16 Nov 2026). It replaces the free-text preamble box with structured selections, a deterministic generator, a live preview, validation and Draft / Under Review / Final status. Selections are saved in `report.narratives.preamble` and the generated text in `summary.preamble`. Existing hand-written preambles are kept until the user confirms a replacement. `npm run typecheck` and `npm test` were added (65 tests). Details are in README.md.
 
 ## Running locally
 

@@ -54,23 +54,36 @@ export function useReportEditor(id: string) {
     }
   }, [data])
 
+  const runSync = useCallback(async () => {
+    if (!navigator.onLine) return
+    try {
+      await syncReport(id)
+      const fresh = await getReport(id)
+      if (fresh && latest.current) {
+        latest.current = { ...latest.current, syncedAt: fresh.syncedAt, deletedPhotoIds: fresh.deletedPhotoIds }
+      }
+      setPhotos(await listPhotos(id))
+      setSaveState("synced")
+    } catch {
+      setSaveState("sync-error")
+    }
+  }, [id])
+
   const scheduleSync = useCallback(() => {
     window.clearTimeout(syncTimer.current)
-    syncTimer.current = window.setTimeout(async () => {
-      if (!navigator.onLine) return
-      try {
-        await syncReport(id)
-        const fresh = await getReport(id)
-        if (fresh && latest.current) {
-          latest.current = { ...latest.current, syncedAt: fresh.syncedAt, deletedPhotoIds: fresh.deletedPhotoIds }
-        }
-        setPhotos(await listPhotos(id))
-        setSaveState("synced")
-      } catch {
-        setSaveState("sync-error")
-      }
-    }, 2500)
-  }, [id])
+    syncTimer.current = window.setTimeout(runSync, 2500)
+  }, [runSync])
+
+  /** Saves on this device and syncs straight away, instead of waiting for the autosave timers. */
+  const saveNow = useCallback(async () => {
+    window.clearTimeout(saveTimer.current)
+    window.clearTimeout(syncTimer.current)
+    if (!latest.current) return
+    setSaveState("saving")
+    await putReport(latest.current)
+    setSaveState("saved")
+    await runSync()
+  }, [runSync])
 
   const persist = useCallback(
     (next: Report) => {
@@ -167,5 +180,5 @@ export function useReportEditor(id: string) {
     return () => window.removeEventListener("online", onOnline)
   }, [scheduleSync])
 
-  return { report, photos, isLoading: isLoading || !report, saveState, update, addPhoto, updatePhoto, removePhoto }
+  return { report, photos, isLoading: isLoading || !report, saveState, update, saveNow, addPhoto, updatePhoto, removePhoto }
 }

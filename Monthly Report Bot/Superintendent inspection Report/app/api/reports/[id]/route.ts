@@ -15,6 +15,10 @@ const ALLOWED_KEYS = [
   "signoff",
 ] as const
 
+// Saved only when the request includes them. A browser tab still running an older version of the app does not
+// send these, and must not wipe what a newer version saved.
+const OPTIONAL_KEYS = ["narratives"] as const
+
 const MAX_BODY_BYTES = 2_000_000
 
 export async function GET(_req: Request, { params }: Ctx) {
@@ -55,6 +59,10 @@ export async function PUT(req: Request, { params }: Ctx) {
   for (const key of ALLOWED_KEYS) {
     const value = body[key]
     doc[key] = value && typeof value === "object" && !Array.isArray(value) ? value : {}
+  }
+  for (const key of OPTIONAL_KEYS) {
+    const value = body[key]
+    if (value && typeof value === "object" && !Array.isArray(value)) doc[key] = value
   }
 
   const db = await getDb()

@@ -55,11 +55,15 @@ components/
   shell/               # Neraveda sidebar, brand and module badges
   dashboard/           # Inspection report list UI
   report/              # Report editor sections and form components
+    preamble/          # Executive Summary – Preamble builder (forms, live preview, validation summary)
   ui/                  # Shared UI primitives
 hooks/
   use-report-editor.ts  # Editing logic and autosave behavior
 lib/
   modules.ts           # Registry of web workspaces
+  narrative/           # Controlled-narrative engine (no React): text/date helpers, preamble options,
+                       #   model, generator and validation
+  vessels.ts           # Fleet list (mirrors report_catalog.VESSELS in the desktop suite)
   form-schema.ts       # SIR form data model and section definitions
   local-db.ts          # Local IndexedDB access
   mongodb.ts           # MongoDB client and indexes
@@ -150,6 +154,64 @@ npm run start
 - View progress for each section
 - Export final inspection report as PDF
 - Attach photographs to sections of the report
+- Generate the Executive Summary preamble from structured selections (see below)
+
+## Executive Summary – Preamble builder
+
+**Executive Summary → Preamble** replaces the free-text preamble box. The Superintendent enters the attendance facts and picks controlled wording from dropdowns and checkboxes. A four-paragraph preamble is generated and previewed live:
+
+1. Attendance
+2. Opening meeting, objectives and scope
+3. Examination, records and focus areas
+4. Findings, follow-up and acknowledgment
+
+The other six summary fields are unchanged, under **Other summary fields**.
+
+**Deterministic.** `lib/narrative/preamble/generate.ts` builds the text from fixed templates, so the same selections always give the same wording, and no AI service is used.
+- Hidden conditional fields never contribute stale values.
+- The text never claims that the vessel was satisfactory, that the machinery was fully operational or that defects were closed.
+- "No deficiencies identified" wording appears only when that option is chosen.
+- Bunkering and cargo operations are described as witnessed only when that is ticked.
+
+**Missing information.** Missing details show as highlighted markers in the preview only. Copied and saved text never contains a marker, because the sentence is shortened instead.
+
+**Validation.** `lib/narrative/preamble/validate.ts` shows errors next to each field and lists them above the preview.
+- Errors block **Final** and saving the text. They cover:
+  - missing vessel, type, start date or location;
+  - an end date before the start date;
+  - sailing inspections without both ports or without a passage status;
+  - no objective selected;
+  - "Other" ticked with no text;
+  - dry-docking without a shipyard;
+  - mutually exclusive options selected together;
+  - placeholders.
+- Warnings cover optional items left empty.
+
+**Saving.**
+- **Vessel and dates** are the report's Inspection Details fields (`details.vessel`, `details.dateFrom`, `details.dateTo`), never a second copy. A fleet vessel also stores `details.vesselId`.
+- **Selections** are stored as stable ids in `report.narratives.preamble` (`status`, `inputs`, `generatedText`, `lastGeneratedAt`). They autosave and sync like the rest of the report. The API saves `narratives` only when a request includes it, so a tab running an older version cannot wipe it.
+- **Save preamble** writes the generated text to `summary.preamble`, which the PDF already reads. If the report holds a preamble that was not produced by the builder, the app asks before replacing it.
+- **Status:** Draft, Under Review or Final. **Final** saves the text and locks the selections.
+
+**Adding the next section** (Overall Condition, Machinery Condition…) follows the same pattern:
+1. Add options, a model, a generator and validation under `lib/narrative/<section>/`.
+2. Add its state under `report.narratives.<section>`. The ids are listed in `lib/narrative/types.ts`.
+3. Reuse the form primitives in `components/report/preamble/fields.tsx`.
+
+## Tests
+
+```bash
+npm run typecheck   # TypeScript, including the tests
+npm test            # Node's built-in test runner on tests/**/*.test.ts (no extra packages)
+```
+
+The tests cover:
+- date and list phrasing;
+- every inspection circumstance and the validation rules;
+- the five reference scenarios (sailing, port, Special Survey dry-docking, newbuilding maiden voyage, SIRE 2.0 preparation), including that scenario 1 reproduces the reference preamble word for word;
+- save → restore round-trips.
+
+`tests/ts-resolve.mjs` only lets Node load the app's extension-less TypeScript imports. The project has no linter configured.
 
 ## Notes on runtime behavior
 
