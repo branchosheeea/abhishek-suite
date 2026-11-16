@@ -1,13 +1,18 @@
-"""Launcher dashboard for Neraveda (formerly Abhishek Automation Suite)."""
+"""NeraVeda home: the Fleet Intelligence view and workspace launcher (formerly Abhishek Automation Suite).
+
+The home page shows the latest results each workspace has already saved (suite_services.home_intelligence).
+It never fetches from MariApps, Outlook or vessels itself; each workspace stays responsible for its sources,
+rules and analysis.
+"""
 from __future__ import annotations
 
 import os
 import queue
-import sqlite3
 import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox
@@ -15,7 +20,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from vessel_report.scroll_input import ScrollRouter
-from suite_services.storage import runtime_root
+from suite_services import home_intelligence, inspection_server
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -37,8 +42,15 @@ IDLE_BG  = "#EEF1F4"
 # Single unified action colour — one action colour, no rainbow
 BTN     = "#1557A0"
 BTN_HV  = "#114888"
+FOCUS_RING = "#1557A0"
+FOCUS_RING_NAV = "#9CC6FF"
 
-TWO_COLUMN_WIDTH = 1180  # window width at which the cards sit two-up
+# Severity colours are kept apart from module identity colours: they appear only as labelled pills.
+SEVERITY_STYLE = {
+    home_intelligence.ACTION: ("#FBE9E6", "#8F2414", "▲"),
+    home_intelligence.REVIEW: ("#FFF1D6", "#6E4500", "●"),
+}
+STATE_INK = "#46525F"  # headline colour for anything other than a normal saved result (the text states it)
 
 _MOD: dict[str, dict] = {
     "vessel": {"accent": "#0B7267", "tint": "#E4F3F0", "badge": "VRC"},
@@ -46,9 +58,11 @@ _MOD: dict[str, dict] = {
     "voyage": {"accent": "#5248C8", "tint": "#EDEAFC", "badge": "VS"},
     "gc":     {"accent": "#A86B10", "tint": "#FCF3E2", "badge": "GCM"},
     "cjc":    {"accent": "#B03A2E", "tint": "#FBECEA", "badge": "CJC"},
+    "sir":    {"accent": "#0E6E8C", "tint": "#E2F2F7", "badge": "SIR"},
 }
 
 CJC_FOLDER = "Critical Jobs Compliance"
+SIDEBAR_WIDTH = 248
 
 
 # ── Module launchers ──────────────────────────────────────────────────────────
@@ -100,21 +114,33 @@ def start_critical_job_compliance(project_root=PROJECT_ROOT):
 # Workspace catalogue: key, eyebrow, number, title, description, button text, sidebar name
 WORKSPACES = (
     ("vessel", "REPORT COLLECTION", "01", "Vessel Report Centre",
-     "Collect vessel reports from MariApps/PAL, organise attachments and track each run.",
+     "Report collection and attachment management from MariApps/PAL.",
      "Open Vessel Report Centre", "Vessel Report Centre"),
     ("oil", "TECHNICAL REVIEW", "02", "Lub Oil Consumption Review",
-     "Track lube oil consumption and stock from the vessels' monthly sheets.",
+     "Monthly lube oil consumption and stock review from vessel sheets.",
      "Open Lub Oil Review", "Lub Oil Review"),
     ("voyage", "VOYAGE INTELLIGENCE", "03", "Voyage Summary",
-     "Monitor performance, cargo efficiency, fuel burn and vessel status in one operational view.",
+     "Voyage performance, cargo, fuel and bunker view from the noon report.",
      "Open Voyage Summary", "Voyage Summary"),
     ("gc", "CLAIM TRACKING", "04", "Guarantee Claim Manager",
-     "Register vessel warranty claims, review Outlook evidence and track follow-ups.",
+     "Warranty claim register with Outlook evidence and follow-up tracking.",
      "Open Guarantee Claims", "Guarantee Claims"),
     ("cjc", "PMS COMPLIANCE", "05", "Critical Job Compliance",
-     "Extract and verify the Critical Job Plan population from MariApps for evidence-based compliance review.",
+     "Critical job plan extraction and verification for PMS compliance review.",
      "Open Critical Job Compliance", "Critical Jobs"),
+    ("sir", "VESSEL INSPECTION", "06", "Superintendent Inspection Report",
+     "Offline inspection reports with photos, cloud sync and PDF export.",
+     "Open Inspection Reports", "Superintendent Inspection"),
 )
+TITLES = {key: title for key, _e, _n, title, *_ in WORKSPACES}
+OPEN_METHOD = {"vessel": "open_project", "oil": "open_lub_oil", "voyage": "open_voyage_summary",
+               "gc": "open_gc_manager", "cjc": "open_critical_jobs", "sir": "open_inspection_reports"}
+BUTTON_ATTR = {"vessel": "launch_button", "oil": "oil_button", "voyage": "voyage_button", "gc": "gc_button",
+               "cjc": "cjc_button", "sir": "sir_button"}
+PROCESS_ATTR = {"vessel": "project_process", "oil": "lub_process", "voyage": "voyage_process",
+                "gc": "gc_process", "cjc": "cjc_process", "sir": "sir_process"}
+
+SIR_LOG = PROJECT_ROOT / "diagnostics" / "superintendent_inspection_server.log"
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -123,9 +149,9 @@ class AutomationSuite(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.title("Neraveda")
-        self.geometry("1240x800")
-        self.minsize(980, 640)
+        self.title("NeraVeda")
+        self._fit_to_screen()
+        self.minsize(980, 600)
         self.configure(fg_color=BG)
 
         self.project_process = None
@@ -133,15 +159,24 @@ class AutomationSuite(ctk.CTk):
         self.voyage_process  = None
         self.gc_process      = None
         self.cjc_process     = None
-        self.health_events   = queue.Queue()
+        self.sir_process     = None
+        self.sir_mode        = None
+        self.sir_url         = None
+        self.sir_events      = queue.Queue()
+        self.intel           = None   # None while the first load is running
+        self.intel_events    = queue.Queue()
+        self._intel_busy     = False
+        self._intel_again    = None   # None, or fetch_sir flag for a queued reload
         self.scroll_router   = ScrollRouter(self)
         self.running         = {key: False for key, *_ in WORKSPACES}
-        self.status_pills    = {}
-        self.nav_status      = {}
-        self.descriptions    = []
         self.columns         = None
+        self.tile_columns    = None
+        self.content_width   = 900
+        self.attention_limit = 4
+        self.attention_rows  = []
+        self.tiles           = {}
 
-        sidebar = ctk.CTkFrame(self, width=248, fg_color=NAVY, corner_radius=0)
+        sidebar = ctk.CTkFrame(self, width=SIDEBAR_WIDTH, fg_color=NAVY, corner_radius=0)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
@@ -162,29 +197,32 @@ class AutomationSuite(ctk.CTk):
         page.pack(fill="both", expand=True, padx=(12, 4))
         page.grid_columnconfigure(0, weight=1)
 
-        self.grid_host = ctk.CTkFrame(page, fg_color="transparent")
-        self.grid_host.grid(row=0, column=0, sticky="ew", padx=(20, 14), pady=(18, 0))
-
-        cards = {}
-        for key, eyebrow, number, title, description, button_text, _ in WORKSPACES:
-            cards[key] = self._workspace_card(key, eyebrow, number, title, description, button_text)
-        self._vessel_card, self.launch_button = cards["vessel"]
-        self._oil_card, self.oil_button = cards["oil"]
-        self._voyage_card, self.voyage_button = cards["voyage"]
-        self._gc_card, self.gc_button = cards["gc"]
-        self._cjc_card, self.cjc_button = cards["cjc"]
-        self._cards = [self._vessel_card, self._oil_card, self._voyage_card, self._gc_card, self._cjc_card]
-        self._add_oil_chips()
-
-        self._build_coming_soon(page, row=1)
-        self._build_footer(page, row=2)
+        self._build_latest(page)
+        self._build_attention(page)
+        self._build_workspaces(page)
+        self._build_footer(page, row=6)
         self._build_sidebar(sidebar)
 
-        self._layout(1)
+        self._layout(self._logical_width())
         self.bind("<Configure>", self._on_resize, add="+")
         self.scroll_router.attach(page)
-        self._update_summary()
-        self.refresh_oil_health()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.render_intelligence()
+        self.refresh_intelligence(fetch_sir=True)
+
+    def _fit_to_screen(self):
+        """1240x800 where it fits; otherwise the available screen, so nothing sits under the taskbar."""
+        try:
+            scale = ctk.ScalingTracker.get_window_scaling(self)
+            width = min(1240, int(self.winfo_screenwidth() / scale) - 40)
+            height = min(800, int(self.winfo_screenheight() / scale) - 90)
+        except Exception:
+            width, height = 1240, 800
+        self.geometry(f"{max(width, 980)}x{max(height, 600)}")
+        self._initial_size = (max(width, 980), max(height, 600))
+
+    def _logical_width(self):
+        return self._initial_size[0]
 
     # ── Header (fixed) ────────────────────────────────────────────────────────
 
@@ -192,77 +230,91 @@ class AutomationSuite(ctk.CTk):
         bar.grid_columnconfigure(0, weight=1)
         hour = datetime.now().hour
         greeting = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
-        self._lbl(bar, f"{greeting}  ·  {datetime.now():%A, %d %B %Y}", 11, FAINT).grid(
-            row=0, column=0, sticky="w", padx=36, pady=(26, 2))
-        self._lbl(bar, "Every report. One clear view.", 26, INK, True).grid(
-            row=1, column=0, sticky="w", padx=36)
-        self.subtitle = self._lbl(
+        self._txt(bar, f"{greeting}  ·  {datetime.now():%A, %d %B %Y}", 11, MUTED).grid(
+            row=0, column=0, sticky="w", padx=36, pady=(16, 2))
+        self._txt(bar, "Fleet Intelligence", 24, INK, True).grid(row=1, column=0, sticky="w", padx=36)
+        self.subtitle = self._txt(
             bar,
-            "Five focused workspaces for vessel reporting, technical review, voyage intelligence, warranty tracking "
-            "and PMS compliance.",
-            12, MUTED, justify="left", wraplength=560,
+            "One connected view of vessel reporting, technical performance, voyage operations, claims, "
+            "inspections and compliance.",
+            12, MUTED, justify="left", wraplength=900,
         )
-        self.subtitle.grid(row=2, column=0, columnspan=2, sticky="w", padx=36, pady=(4, 20))
-        self.summary_chip = ctk.CTkLabel(
-            bar, text="4 ACTIVE", fg_color=GOOD_BG, text_color=GOOD, corner_radius=14, height=30,
-            font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
-        )
-        self.summary_chip.grid(row=1, column=1, sticky="e", padx=(0, 36))
+        self.subtitle.grid(row=2, column=0, sticky="w", padx=36, pady=(4, 12))
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
     def _build_sidebar(self, sidebar):
         brand = ctk.CTkFrame(sidebar, fg_color="transparent")
-        brand.pack(fill="x", padx=22, pady=(28, 0))
+        brand.pack(fill="x", padx=22, pady=(20, 0))
         mark = ctk.CTkFrame(brand, width=46, height=46, fg_color=BTN, corner_radius=14)
         mark.pack(side="left", padx=(0, 14))
         mark.pack_propagate(False)
         self._lbl(mark, "N", 22, "#FFFFFF", True).pack(expand=True)
         info = ctk.CTkFrame(brand, fg_color="transparent")
         info.pack(side="left", anchor="center")
-        self._lbl(info, "Neraveda", 16, "#FFFFFF", True).pack(anchor="w")
-        self._lbl(info, "Automation Suite", 11, NAV_MUTE).pack(anchor="w")
+        self._lbl(info, "NeraVeda", 16, "#FFFFFF", True).pack(anchor="w")
+        self._lbl(info, "Fleet Intelligence Suite", 11, NAV_MUTE).pack(anchor="w")
 
-        ctk.CTkFrame(sidebar, height=1, fg_color=NAV_HV).pack(fill="x", padx=20, pady=(24, 18))
-        self._lbl(sidebar, "WORKSPACES", 10, NAV_MUTE, True).pack(anchor="w", padx=26, pady=(0, 8))
+        ctk.CTkFrame(sidebar, height=1, fg_color=NAV_HV).pack(fill="x", padx=20, pady=(16, 10))
+        self._nav_item(sidebar, None, "Home", self.scroll_home, active=True)
+        self._txt(sidebar, "WORKSPACES", 10, NAV_MUTE, True).pack(anchor="w", padx=26, pady=(12, 6))
         for (key, *_rest, nav_name), card in zip(WORKSPACES, self._cards):
             self._nav_item(sidebar, key, nav_name, lambda c=card: self._scroll_to(c))
 
         ctk.CTkFrame(sidebar, fg_color="transparent").pack(fill="both", expand=True)
-        ctk.CTkFrame(sidebar, height=1, fg_color=NAV_HV).pack(fill="x", padx=20, pady=(0, 14))
-        self._lbl(sidebar, "Smarter Data.\nSharper Decisions.\nSmoother Sailing.", 13, NAV_TEXT, justify="left").pack(anchor="w", padx=26)
-        self._lbl(sidebar, "v2026  ·  AKG", 10, NAV_MUTE).pack(anchor="w", padx=26, pady=(8, 24))
+        ctk.CTkFrame(sidebar, height=1, fg_color=NAV_HV).pack(fill="x", padx=20, pady=(0, 12))
+        self.sidebar_tagline = self._txt(sidebar, "Smarter Data.\nSharper Decisions.\nSmoother Sailing.", 12,
+                                         NAV_TEXT, justify="left")
+        self.sidebar_tagline.pack(anchor="w", padx=26)
+        self._txt(sidebar, "v2026  ·  AKG", 10, NAV_MUTE).pack(anchor="w", padx=26, pady=(6, 16))
+        self._tagline_shown = True
 
-    def _nav_item(self, sidebar, key, name, cmd):
-        m = _MOD[key]
-        row = ctk.CTkFrame(sidebar, fg_color="transparent", corner_radius=10, cursor="hand2", height=44)
-        row.pack(fill="x", padx=14, pady=2)
+    def _nav_item(self, sidebar, key, name, cmd, active=False):
+        row = ctk.CTkFrame(sidebar, fg_color=NAV_HV if active else "transparent", corner_radius=10,
+                           cursor="hand2", height=37, border_width=0, border_color=FOCUS_RING_NAV)
+        row.pack(fill="x", padx=14, pady=1)
         row.pack_propagate(False)
-        badge = ctk.CTkFrame(row, width=30, height=30, fg_color=m["tint"], corner_radius=8)
+        if key is None:
+            badge = ctk.CTkFrame(row, width=28, height=28, fg_color=NAVY if active else NAV_HV, corner_radius=8)
+            glyph, glyph_color = "⌂", "#FFFFFF"
+        else:
+            badge = ctk.CTkFrame(row, width=28, height=28, fg_color=_MOD[key]["tint"], corner_radius=8)
+            glyph, glyph_color = _MOD[key]["badge"], _MOD[key]["accent"]
         badge.pack(side="left", padx=(10, 12))
         badge.pack_propagate(False)
-        initials = ctk.CTkLabel(badge, text=m["badge"], text_color=m["accent"],
-                                font=ctk.CTkFont("Segoe UI", 8, weight="bold"))
+        initials = ctk.CTkLabel(badge, text=glyph, text_color=glyph_color,
+                                font=ctk.CTkFont("Segoe UI", 15 if key is None else 8, weight="bold"))
         initials.pack(expand=True)
-        lbl = ctk.CTkLabel(row, text=name, text_color=NAV_TEXT, anchor="w", font=ctk.CTkFont("Segoe UI", 13))
+        lbl = ctk.CTkLabel(row, text=name, text_color="#FFFFFF" if active else NAV_TEXT, anchor="w",
+                           font=ctk.CTkFont("Segoe UI", 13, weight="bold" if active else "normal"))
         lbl.pack(side="left")
-        status = ctk.CTkFrame(row, width=8, height=8, fg_color="transparent", corner_radius=4)
-        status.pack(side="right", padx=14)
-        self.nav_status[key] = status
+        rest = NAV_HV if active else "transparent"
         _on  = lambda _: row.configure(fg_color=NAV_HV)
-        _off = lambda _: row.configure(fg_color="transparent")
+        _off = lambda _: row.configure(fg_color=rest)
         _clk = lambda _: cmd()
         for w in (row, badge, initials, lbl):
             w.bind("<Enter>", _on, add="+")
             w.bind("<Leave>", _off, add="+")
             w.bind("<Button-1>", _clk, add="+")
+        # Keyboard: Tab reaches each item, Enter/Space activates it, focus shows a ring.
+        tk.Frame.configure(row, takefocus=1)
+        tk.Frame.bind(row, "<FocusIn>", lambda _: row.configure(border_width=2), "+")
+        tk.Frame.bind(row, "<FocusOut>", lambda _: row.configure(border_width=0), "+")
+        tk.Frame.bind(row, "<Return>", _clk, "+")
+        tk.Frame.bind(row, "<space>", _clk, "+")
+
+    def scroll_home(self):
+        try:
+            self.page._parent_canvas.yview_moveto(0)
+        except Exception:
+            pass
 
     def _scroll_to(self, widget):
         def _do():
             try:
                 self.update_idletasks()
                 canvas = self.page._parent_canvas
-                sf     = self.page._scrollable_frame
+                sf     = self.page  # CTkScrollableFrame is itself the frame inside the canvas
                 y      = widget.winfo_rooty() - sf.winfo_rooty()
                 total  = sf.winfo_reqheight()
                 vis    = canvas.winfo_height()
@@ -272,133 +324,390 @@ class AutomationSuite(ctk.CTk):
                 pass
         self.after(80, _do)
 
-    # ── Workspace cards ───────────────────────────────────────────────────────
+    def _ensure_visible(self, widget):
+        """Scroll the page so a keyboard-focused widget is on screen."""
+        try:
+            canvas = self.page._parent_canvas
+            frame = self.page  # CTkScrollableFrame is itself the frame inside the canvas
+            total = frame.winfo_reqheight()
+            if total <= canvas.winfo_height():
+                return
+            top = widget.winfo_rooty() - frame.winfo_rooty()
+            bottom = top + widget.winfo_height()
+            first, last = canvas.yview()
+            if top < first * total or bottom > last * total:
+                canvas.yview_moveto(max(0.0, (top - 40) / total))
+        except Exception:
+            pass
+
+    # ── Section scaffolding ───────────────────────────────────────────────────
+
+    def _section_header(self, page, row, title, caption, pady=(14, 8)):
+        bar = ctk.CTkFrame(page, fg_color="transparent")
+        bar.grid(row=row, column=0, sticky="ew", padx=(20, 14), pady=pady)
+        bar.grid_columnconfigure(1, weight=1)
+        self._txt(bar, title, 15, INK, True).grid(row=0, column=0, sticky="w")
+        caption_label = self._txt(bar, caption, 11, MUTED)
+        caption_label.grid(row=0, column=1, sticky="w", padx=(12, 0))
+        return bar
+
+    # ── Latest Intelligence ───────────────────────────────────────────────────
+
+    def _build_latest(self, page):
+        bar = self._section_header(page, 0, "Latest Intelligence",
+                                   "Latest saved result from each workspace. Not live data.", pady=(10, 6))
+        self.reload_button = ctk.CTkButton(
+            bar, text="Reload saved results", command=lambda: self.refresh_intelligence(fetch_sir=True),
+            fg_color="transparent", hover_color=IDLE_BG, text_color=BTN, height=28, width=150, corner_radius=8,
+            border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"))
+        self.reload_button.grid(row=0, column=2, sticky="e")
+        self._focusable(self.reload_button)
+
+        self.tile_host = ctk.CTkFrame(page, fg_color="transparent")
+        self.tile_host.grid(row=1, column=0, sticky="ew", padx=(20, 14))
+        for key in home_intelligence.ORDER:
+            self.tiles[key] = self._build_tile(key)
+
+    def _build_tile(self, key):
+        m = _MOD[key]
+        tile = ctk.CTkFrame(self.tile_host, fg_color=SURFACE, border_width=1, border_color=SEP, corner_radius=12)
+        head = ctk.CTkFrame(tile, fg_color="transparent")
+        head.pack(fill="x", padx=14, pady=(9, 0))
+        head.grid_columnconfigure(1, weight=1)
+        badge = ctk.CTkFrame(head, width=22, height=22, fg_color=m["tint"], corner_radius=6)
+        badge.grid(row=0, column=0, padx=(0, 8))
+        badge.pack_propagate(False)
+        ctk.CTkLabel(badge, text=m["badge"], text_color=m["accent"],
+                     font=ctk.CTkFont("Segoe UI", 7, weight="bold")).pack(expand=True)
+        name = self._txt(head, home_intelligence.NAMES[key].upper(), 9, MUTED, True, justify="left")
+        name.grid(row=0, column=1, sticky="w")
+        headline = self._txt(tile, "Loading saved results…", 13, MUTED, True, justify="left")
+        headline.pack(anchor="w", padx=14, pady=(6, 0))
+        detail = self._txt(tile, "", 11, MUTED, justify="left")
+        detail.pack(anchor="w", padx=14, pady=(3, 10))
+        return {"frame": tile, "name": name, "headline": headline, "detail": detail}
+
+    # ── Requires Attention ────────────────────────────────────────────────────
+
+    def _build_attention(self, page):
+        self._section_header(page, 2, "Requires Attention", "Based on the latest completed workspace reviews",
+                             pady=(12, 6))
+        self.attention_box = ctk.CTkFrame(page, fg_color=SURFACE, border_width=1, border_color=SEP, corner_radius=12)
+        self.attention_box.grid(row=3, column=0, sticky="ew", padx=(20, 14))
+        self.attention_more = self._txt(page, "", 11, MUTED, justify="left")
+        self.attention_more.grid(row=4, column=0, sticky="w", padx=(24, 14), pady=(5, 0))
+
+    def _render_attention(self):
+        for child in self.attention_box.winfo_children():
+            child.destroy()
+        self.attention_rows = []
+        if self.intel is None:
+            self._lbl(self.attention_box, "Loading saved results…", 12, MUTED).pack(anchor="w", padx=16, pady=14)
+            self.attention_more.configure(text="")
+            return
+        shown, hidden = home_intelligence.top_attention(self.intel, self.attention_limit)
+        if not shown:
+            unread = [home_intelligence.NAMES[k] for k in home_intelligence.ORDER
+                      if self.intel[k].state in ("not_connected", "none", "error", "failed")]
+            text = "No attention item in the saved results NeraVeda can read."
+            if unread:
+                text += " Not included because no completed result is available: " + ", ".join(unread) + "."
+            self._lbl(self.attention_box, text, 12, MUTED, justify="left",
+                      wraplength=self.content_width - 40).pack(anchor="w", padx=16, pady=14)
+        for index, item in enumerate(shown):
+            if index:
+                ctk.CTkFrame(self.attention_box, height=1, fg_color=SEP).pack(fill="x", padx=14)
+            self.attention_rows.append(self._attention_row(item))
+        if hidden:
+            parts = [f"{count} more in {home_intelligence.NAMES[key]}" for key, count in
+                     sorted(hidden.items(), key=lambda kv: home_intelligence.ORDER.index(kv[0]))]
+            self.attention_more.configure(text=" · ".join(parts) + ". Open the workspace to review all items.")
+        else:
+            self.attention_more.configure(text="")
+        self._place_attention_rows()
+        self.scroll_router.attach(self.attention_box)
+
+    def _attention_row(self, item):
+        row = ctk.CTkFrame(self.attention_box, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=8)
+        row.grid_columnconfigure(1, weight=1)
+        background, foreground, icon = SEVERITY_STYLE[item.severity]
+        ctk.CTkLabel(row, text=f"{icon}  {home_intelligence.SEVERITY_LABEL[item.severity]}", fg_color=background,
+                     text_color=foreground, corner_radius=8, height=24, width=136,
+                     font=ctk.CTkFont("Segoe UI", 10, weight="bold")).grid(row=0, column=0, sticky="nw", pady=(1, 0))
+        text = ctk.CTkFrame(row, fg_color="transparent")
+        text.grid(row=0, column=1, sticky="ew", padx=(12, 12))
+        title = self._txt(text, f"{item.vessel}  ·  {item.issue}", 12, INK, True, justify="left")
+        title.pack(anchor="w")
+        reason = self._txt(text, item.reason, 11, MUTED, justify="left")
+        reason.pack(anchor="w", pady=(3, 0))
+        source = ctk.CTkFrame(row, fg_color="transparent")
+        self._txt(source, home_intelligence.NAMES[item.workspace], 11, INK, True).pack(anchor="w")
+        provenance = self._txt(source, f"{item.period} · {item.processed}", 10, MUTED, justify="left")
+        provenance.pack(anchor="w", pady=(3, 0))
+        button = ctk.CTkButton(row, text="Review  →", command=lambda i=item: self.review(i), width=96, height=30,
+                               corner_radius=8, fg_color=IDLE_BG, hover_color=SEP, text_color=BTN,
+                               border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"))
+        button.grid(row=0, column=3, sticky="ne")
+        self._focusable(button, page_widget=True)
+        return {"row": row, "source": source, "title": title, "reason": reason, "reason_text": item.reason,
+                "provenance": provenance}
+
+    def _place_attention_rows(self):
+        narrow = self.content_width < 820
+        text_width = self.content_width - 136 - 96 - 64 - (0 if narrow else 220)
+        width = max(220, text_width)
+        reason_chars = max(40, int(width / 6.2))  # one line of reason; the workspace holds the full detail
+        for entry in self.attention_rows:
+            if narrow:
+                entry["row"].grid_columnconfigure(2, minsize=0)
+                entry["source"].grid(row=1, column=1, sticky="w", padx=(12, 12), pady=(4, 0))
+            else:
+                # Same source column on every row (grid minsize is in raw pixels, so apply display scaling).
+                entry["row"].grid_columnconfigure(2, minsize=int(236 * ctk.ScalingTracker.get_widget_scaling(self)))
+                entry["source"].grid(row=0, column=2, sticky="nw", padx=(0, 14))
+            entry["title"].configure(wraplength=width)
+            text = entry["reason_text"]
+            if len(text) > reason_chars:
+                text = text[:reason_chars - 1].rstrip() + "…"
+            entry["reason"].configure(text=text, wraplength=width + 60)
+            entry["provenance"].configure(wraplength=width if narrow else 216)
+        self.attention_more.configure(wraplength=self.content_width - 20)
+
+    def review(self, item):
+        """Open the workspace that produced an attention item."""
+        if item.workspace == "sir":
+            self.open_inspection_reports(item.target)
+            return
+        process = getattr(self, PROCESS_ATTR[item.workspace])
+        if process is not None and process.poll() is None:
+            messagebox.showinfo("Already open", f"{TITLES[item.workspace]} is already open in its own window.",
+                                parent=self)
+            return
+        getattr(self, OPEN_METHOD[item.workspace])()
+
+    # ── Workspaces ────────────────────────────────────────────────────────────
+
+    def _build_workspaces(self, page):
+        self._section_header(page, 5, "Workspaces", "Open a workspace to fetch, process and review in detail",
+                             pady=(14, 6))
+        self.grid_host = ctk.CTkFrame(page, fg_color="transparent")
+        self.grid_host.grid(row=6, column=0, sticky="ew", padx=(20, 14))
+        cards = {}
+        for key, eyebrow, number, title, description, button_text, _ in WORKSPACES:
+            cards[key] = self._workspace_card(key, eyebrow, number, title, description, button_text)
+        self._vessel_card, self.launch_button = cards["vessel"]
+        self._oil_card, self.oil_button = cards["oil"]
+        self._voyage_card, self.voyage_button = cards["voyage"]
+        self._gc_card, self.gc_button = cards["gc"]
+        self._cjc_card, self.cjc_button = cards["cjc"]
+        self._sir_card, self.sir_button = cards["sir"]
+        self._cards = [self._vessel_card, self._oil_card, self._voyage_card, self._gc_card, self._cjc_card,
+                       self._sir_card]
+        self.sir_stop_button = ctk.CTkButton(
+            self._sir_card.foot, text="Stop server", command=self.stop_inspection_reports, width=104, height=34,
+            corner_radius=9, fg_color=IDLE_BG, hover_color=SEP, text_color=INK, border_color=FOCUS_RING,
+            font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+        )
+        self._focusable(self.sir_stop_button, page_widget=True)
 
     def _workspace_card(self, key, eyebrow, number, title, description, button_text):
         m = _MOD[key]
-        card = ctk.CTkFrame(self.grid_host, fg_color=SURFACE, border_width=1, border_color=SEP, corner_radius=16)
-        ctk.CTkFrame(card, height=4, fg_color=m["accent"], corner_radius=2).pack(fill="x", padx=18, pady=(10, 0))
+        card = ctk.CTkFrame(self.grid_host, fg_color=SURFACE, border_width=1, border_color=SEP, corner_radius=14)
+        ctk.CTkFrame(card, height=3, fg_color=m["accent"], corner_radius=2).pack(fill="x", padx=16, pady=(7, 0))
 
         head = ctk.CTkFrame(card, fg_color="transparent")
-        head.pack(fill="x", padx=22, pady=(16, 0))
-        badge = ctk.CTkFrame(head, width=50, height=50, fg_color=m["tint"], corner_radius=14)
+        head.pack(fill="x", padx=16, pady=(9, 0))
+        badge = ctk.CTkFrame(head, width=36, height=36, fg_color=m["tint"], corner_radius=10)
         badge.pack(side="left")
         badge.pack_propagate(False)
-        self._lbl(badge, m["badge"], 12, m["accent"], True).pack(expand=True)
+        self._lbl(badge, m["badge"], 10, m["accent"], True).pack(expand=True)
         titles = ctk.CTkFrame(head, fg_color="transparent")
-        titles.pack(side="left", fill="x", expand=True, padx=(14, 8))
-        self._lbl(titles, f"{eyebrow}  ·  WORKSPACE {number}", 9, m["accent"], True).pack(anchor="w")
-        self._lbl(titles, title, 18, INK, True).pack(anchor="w", pady=(2, 0))
-        status = ctk.CTkLabel(head, text="Ready", fg_color=IDLE_BG, text_color=MUTED, corner_radius=11,
-                              height=24, width=78, font=ctk.CTkFont("Segoe UI", 10, weight="bold"))
-        status.pack(side="right", anchor="n")
-        self.status_pills[key] = status
+        titles.pack(side="left", fill="x", expand=True, padx=(12, 0))
+        self._txt(titles, f"{eyebrow}  ·  {number}", 9, m["accent"], True).pack(anchor="w")
+        card.title = self._txt(titles, title, 14, INK, True, justify="left")
+        card.title.pack(anchor="w", pady=(2, 0))
 
-        desc = self._lbl(card, description, 12, MUTED, justify="left", wraplength=440)
-        desc.pack(anchor="w", padx=22, pady=(12, 0))
-        self.descriptions.append(desc)
-        # Optional info row (chips); packed only by cards that use it, so empty cards stay compact.
-        card.meta = ctk.CTkFrame(card, fg_color="transparent", height=1)
-        card.meta_anchor = desc
+        card.description = self._txt(card, description, 11, MUTED, justify="left")
+        card.description.pack(anchor="w", padx=16, pady=(8, 0))
+        card.outcome = self._txt(card, "Loading saved results…", 12, MUTED, True, justify="left")
+        card.outcome.pack(anchor="w", padx=16, pady=(8, 0))
+        card.updated = self._txt(card, "", 10, MUTED, justify="left")
+        card.updated.pack(anchor="w", padx=16, pady=(3, 0))
 
         ctk.CTkFrame(card, fg_color="transparent", height=1).pack(fill="both", expand=True)
-        ctk.CTkFrame(card, height=1, fg_color=SEP).pack(fill="x", padx=22, pady=(14, 0))
-        foot = ctk.CTkFrame(card, fg_color="transparent")
-        foot.pack(fill="x", padx=22, pady=(14, 18))
+        foot = card.foot = ctk.CTkFrame(card, fg_color="transparent")
+        foot.pack(fill="x", padx=16, pady=(10, 12))
         button = ctk.CTkButton(
-            foot, text=button_text, command=getattr(self, {
-                "vessel": "open_project", "oil": "open_lub_oil",
-                "voyage": "open_voyage_summary", "gc": "open_gc_manager",
-                "cjc": "open_critical_jobs"}[key]),
-            fg_color=BTN, hover_color=BTN_HV, text_color="#FFFFFF", text_color_disabled="#E6EDF5",
-            height=40, corner_radius=10, font=ctk.CTkFont("Segoe UI", 12, weight="bold"),
+            foot, text=button_text, command=getattr(self, OPEN_METHOD[key]),
+            fg_color=BTN, hover_color=BTN_HV, text_color="#FFFFFF", text_color_disabled=MUTED,
+            height=34, corner_radius=9, border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
         )
         button.pack(side="left")
-        self._lbl(foot, "Opens in its own window", 10, FAINT).pack(side="right")
+        self._focusable(button, page_widget=True)
         return card, button
-
-    def _add_oil_chips(self):
-        self._oil_card.meta.pack(anchor="w", padx=22, pady=(10, 0), after=self._oil_card.meta_anchor)
-        chip_font = ctk.CTkFont("Segoe UI", 11, weight="bold")
-        chip = dict(fg_color=_MOD["oil"]["tint"], text_color=_MOD["oil"]["accent"], corner_radius=8, height=26,
-                    font=chip_font)
-        self.latest_value = ctk.CTkLabel(self._oil_card.meta, text="Latest: —", **chip)
-        self.latest_value.pack(side="left", padx=(0, 8))
-        self.reports_value = ctk.CTkLabel(self._oil_card.meta, text="Reports: —", **chip)
-        self.reports_value.pack(side="left")
-
-    def _layout(self, columns):
-        """Two-up grid on wide windows, a single column on narrow ones. Order never changes."""
-        if columns == self.columns:
-            return
-        self.columns = columns
-        for index in range(2):
-            self.grid_host.grid_columnconfigure(index, weight=1 if index < columns else 0,
-                                                uniform="cards" if index < columns else "")
-        for index, card in enumerate(self._cards):
-            row, column = divmod(index, columns)
-            card.grid(row=row, column=column, sticky="nsew",
-                      padx=(0, 9) if columns == 2 and column == 0 else (9, 0) if columns == 2 else 0,
-                      pady=(0, 18))
-        wrap = 430 if columns == 2 else 560
-        for label in self.descriptions:
-            label.configure(wraplength=wrap)
-        self.subtitle.configure(wraplength=900 if columns == 2 else 560)
-
-    def _on_resize(self, event):
-        if event.widget is self:
-            # Configure events report physical pixels; compare in logical (unscaled) pixels.
-            width = event.width / ctk.ScalingTracker.get_window_scaling(self)
-            self._layout(2 if width >= TWO_COLUMN_WIDTH else 1)
-
-    def _build_coming_soon(self, page, row):
-        band = ctk.CTkFrame(page, fg_color="transparent")
-        band.grid(row=row, column=0, sticky="ew", padx=(20, 14), pady=(0, 0))
-        band.grid_columnconfigure(0, weight=1, uniform="ph")
-        band.grid_columnconfigure(1, weight=1, uniform="ph")
-        for col in range(2):
-            ph = ctk.CTkFrame(band, fg_color="transparent", border_width=1, border_color="#D5DCE4", corner_radius=16)
-            ph.grid(row=0, column=col, sticky="ew", padx=(0, 9) if col == 0 else (9, 0))
-            inner = ctk.CTkFrame(ph, fg_color="transparent")
-            inner.pack(expand=True, pady=26)
-            plus = ctk.CTkFrame(inner, width=30, height=30, fg_color=IDLE_BG, corner_radius=15)
-            plus.pack(side="left", padx=(0, 10))
-            plus.pack_propagate(False)
-            self._lbl(plus, "+", 15, FAINT, True).pack(expand=True)
-            self._lbl(inner, "Workspace coming soon", 12, FAINT).pack(side="left")
 
     def _build_footer(self, page, row):
         f = ctk.CTkFrame(page, fg_color="transparent")
-        f.grid(row=row, column=0, sticky="ew", padx=(20, 14), pady=(22, 24))
+        f.grid(row=row + 1, column=0, sticky="ew", padx=(20, 14), pady=(18, 22))
         ctk.CTkFrame(f, height=1, fg_color=SEP).pack(fill="x")
-        self._lbl(f, "ABHISHEK AUTOMATION SUITE  ·  BUILT FOR OPERATIONAL CLARITY",
-                  9, FAINT, True).pack(anchor="w", pady=(10, 0))
+        self.footer_note = self._txt(
+            f, "NeraVeda Home shows the latest results each workspace has saved. It does not fetch from MariApps, "
+               "Outlook or vessels; open a workspace to fetch and process new data.", 10, MUTED, justify="left")
+        self.footer_note.pack(anchor="w", pady=(10, 0))
+
+    # ── Layout ────────────────────────────────────────────────────────────────
+
+    def _layout(self, window_width):
+        """Cards 3-up on wide windows, 2-up on laptops, 1-up when narrow. Order never changes."""
+        content = max(420, int(window_width) - SIDEBAR_WIDTH - 70)
+        self.content_width = content
+        columns = 3 if content >= 900 else 2 if content >= 560 else 1
+        tile_columns = 3 if content >= 640 else 2 if content >= 440 else 1
+        if columns != self.columns:
+            self.columns = columns
+            self._grid(self.grid_host, self._cards, columns, gap=14)
+        if tile_columns != self.tile_columns:
+            self.tile_columns = tile_columns
+            self._grid(self.tile_host, [t["frame"] for t in self.tiles.values()], tile_columns, gap=10)
+        card_text = (content - 14 * (columns - 1)) // columns - 40
+        tile_text = (content - 10 * (tile_columns - 1)) // tile_columns - 32
+        for card in self._cards:
+            card.title.configure(wraplength=max(140, card_text - 50))
+            for label in (card.description, card.outcome, card.updated):
+                label.configure(wraplength=max(160, card_text))
+        for tile in self.tiles.values():
+            tile["name"].configure(wraplength=max(120, tile_text - 30))
+            tile["headline"].configure(wraplength=max(150, tile_text))
+            tile["detail"].configure(wraplength=max(150, tile_text))
+        self.subtitle.configure(wraplength=max(400, content))
+        self.footer_note.configure(wraplength=max(400, content - 20))
+        self._place_attention_rows()
+
+    @staticmethod
+    def _grid(host, widgets, columns, gap):
+        for index in range(3):
+            host.grid_columnconfigure(index, weight=1 if index < columns else 0,
+                                      uniform="cells" if index < columns else "")
+        for index, widget in enumerate(widgets):
+            row, column = divmod(index, columns)
+            left = 0 if column == 0 else gap // 2
+            right = 0 if column == columns - 1 else gap // 2
+            widget.grid(row=row, column=column, sticky="nsew", padx=(left, right), pady=(0, gap))
+
+    def _on_resize(self, event):
+        if event.widget is not self:
+            return
+        # Configure events report physical pixels; compare in logical (unscaled) pixels.
+        scale = ctk.ScalingTracker.get_window_scaling(self)
+        width, height = event.width / scale, event.height / scale
+        limit = 3 if height < 740 else 4
+        show_tagline = height >= 680  # the sidebar must not overflow on short windows
+        if show_tagline != self._tagline_shown:
+            self._tagline_shown = show_tagline
+            if show_tagline:
+                self.sidebar_tagline.pack(anchor="w", padx=26, before=self.sidebar_tagline.master.pack_slaves()[-1])
+            else:
+                self.sidebar_tagline.pack_forget()
+        if abs(width - (self.content_width + SIDEBAR_WIDTH + 70)) > 6:
+            self._layout(width)
+        if limit != self.attention_limit:
+            self.attention_limit = limit
+            if self.intel is not None:
+                self._render_attention()
+
+    # ── Intelligence ──────────────────────────────────────────────────────────
+
+    def refresh_intelligence(self, fetch_sir=False):
+        """Reload saved results in the background. With fetch_sir, also refresh the cached Inspection
+        Reports summary if its server is running (nothing is started for this)."""
+        if self._intel_busy:
+            self._intel_again = bool(self._intel_again) or fetch_sir
+            return
+        self._intel_busy = True
+        self.reload_button.configure(state="disabled", text="Reloading…")
+
+        def work():
+            note = None
+            if fetch_sir:
+                try:
+                    port = inspection_server.server_port()
+                    if inspection_server.probe(port) == "sir":
+                        home_intelligence.fetch_inspection_summary(port)
+                except Exception as error:
+                    note = f"Latest summary fetch failed ({type(error).__name__}); showing the previous summary"
+            result = home_intelligence.load_all()
+            if note and result["sir"].state == "ok":
+                result["sir"].freshness = note
+            self.intel_events.put(result)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(150, self._poll_intelligence)
+
+    def _poll_intelligence(self):
+        try:
+            result = self.intel_events.get_nowait()
+        except queue.Empty:
+            self.after(150, self._poll_intelligence)
+            return
+        except tk.TclError:
+            return
+        self.intel = result
+        self._intel_busy = False
+        try:
+            self.reload_button.configure(state="normal", text="Reload saved results")
+            self.render_intelligence()
+        except tk.TclError:
+            return  # window closed while loading
+        if self._intel_again is not None:
+            again, self._intel_again = self._intel_again, None
+            self.refresh_intelligence(fetch_sir=again)
+
+    def render_intelligence(self):
+        for key in home_intelligence.ORDER:
+            intel = self.intel.get(key) if self.intel else None
+            tile, card = self.tiles[key], self._cards[home_intelligence.ORDER.index(key)]
+            if intel is None:
+                tile["headline"].configure(text="Loading saved results…", text_color=MUTED)
+                tile["detail"].configure(text="")
+                card.outcome.configure(text="Loading saved results…", text_color=MUTED)
+                card.updated.configure(text="")
+                continue
+            # Non-normal states say so in words ("Not connected to Home", "Not yet processed",
+            # "Could not read saved results"…), so colour is never the only signal.
+            ok = intel.state == "ok"
+            tile["headline"].configure(text=intel.headline, text_color=INK if ok else STATE_INK)
+            tile["detail"].configure(text="\n".join(filter(None, (intel.context, intel.freshness))))
+            card.outcome.configure(text=intel.outcome, text_color=INK if ok else STATE_INK)
+            card.updated.configure(text=intel.updated)
+        self._render_attention()
 
     # ── Running state ─────────────────────────────────────────────────────────
 
     def _set_running(self, key, running):
         self.running[key] = running
-        pill = self.status_pills.get(key)
-        if pill is not None:
-            pill.configure(text="● Running" if running else "Ready",
-                           fg_color=GOOD_BG if running else IDLE_BG, text_color=GOOD if running else MUTED)
-        dot = self.nav_status.get(key)
-        if dot is not None:
-            dot.configure(fg_color="#4ADE80" if running else "transparent")
-        button = {"vessel": "launch_button", "oil": "oil_button", "voyage": "voyage_button", "gc": "gc_button",
-                  "cjc": "cjc_button"}.get(key)
-        if button and hasattr(self, button):
-            # An open workspace reads as "already open", not as a dimmed primary action.
-            getattr(self, button).configure(fg_color=GOOD_BG if running else BTN,
-                                            text_color_disabled=GOOD if running else "#E6EDF5")
-        self._update_summary()
-
-    def _update_summary(self):
-        open_count = sum(self.running.values())
-        text = f"{len(WORKSPACES)} WORKSPACES" + (f"  ·  {open_count} OPEN" if open_count else "")
-        self.summary_chip.configure(text=f"  {text}  ")
+        if key == "sir":
+            return  # the inspection button stays usable while running ("Open in browser")
+        button = getattr(self, BUTTON_ATTR[key], None)
+        if button is not None:
+            # An open workspace reads as "already open" (neutral), not as a dimmed primary action.
+            button.configure(fg_color=IDLE_BG if running else BTN, text_color_disabled=MUTED)
 
     # ── Widget helpers ────────────────────────────────────────────────────────
+
+    def _focusable(self, button, page_widget=False):
+        """Tab focus, a visible focus ring, and Enter/Space activation for a CTkButton."""
+        tk.Frame.configure(button, takefocus=1)
+
+        def focus_in(_):
+            button.configure(border_width=2)
+            if page_widget:
+                self._ensure_visible(button)
+
+        tk.Frame.bind(button, "<FocusIn>", focus_in, "+")
+        tk.Frame.bind(button, "<FocusOut>", lambda _: button.configure(border_width=0), "+")
+        tk.Frame.bind(button, "<Return>", lambda _: button.invoke(), "+")
+        tk.Frame.bind(button, "<space>", lambda _: button.invoke(), "+")
 
     @staticmethod
     def _lbl(parent, text, size=13, color=INK, bold=False, **kwargs):
@@ -407,6 +716,11 @@ class AutomationSuite(ctk.CTk):
             font=ctk.CTkFont("Segoe UI", size, weight="bold" if bold else "normal"),
             anchor="w", **kwargs,
         )
+
+    @staticmethod
+    def _txt(parent, text, size=12, color=INK, bold=False, **kwargs):
+        """A label sized to its text (CTkLabel otherwise reserves at least 28 px)."""
+        return AutomationSuite._lbl(parent, text, size, color, bold, height=1, **kwargs)
 
     # Legacy aliases for test compatibility
     @staticmethod
@@ -490,61 +804,7 @@ class AutomationSuite(ctk.CTk):
         self._set_running("cjc", True)
         self.after(1000, self.check_cjc_process)
 
-    def check_cjc_process(self):
-        if self.cjc_process is not None and self.cjc_process.poll() is None:
-            self.after(1000, self.check_cjc_process)
-        else:
-            self.cjc_button.configure(state="normal", text="Open Critical Job Compliance")
-            self._set_running("cjc", False)
-
-    # ── Health polling ────────────────────────────────────────────────────────
-
-    def check_lub_process(self):
-        if self.lub_process is not None and self.lub_process.poll() is None:
-            self.after(1000, self.check_lub_process)
-        else:
-            self.oil_button.configure(state="normal", text="Open Lub Oil Review")
-            self._set_running("oil", False)
-            self.refresh_oil_health()
-
-    def refresh_oil_health(self):
-        def read():
-            database = runtime_root() / "suite.sqlite3"
-            if not database.is_file():
-                self.health_events.put((None, 0))
-                return
-            try:
-                db = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=2)
-                try:
-                    latest, active = db.execute(
-                        "SELECT MAX(month),COUNT(*) FROM monthly_reports WHERE is_active=1"
-                    ).fetchone()
-                    self.health_events.put((latest, active))
-                finally:
-                    db.close()
-            except (sqlite3.Error, ValueError):
-                self.health_events.put(None)
-        threading.Thread(target=read, daemon=True).start()
-        self.after(100, self.poll_oil_health)
-
-    def poll_oil_health(self):
-        try:
-            health = self.health_events.get_nowait()
-        except queue.Empty:
-            self.after(100, self.poll_oil_health)
-            return
-        if health is None:
-            self.latest_value.configure(text="Latest: Unavailable")
-            self.reports_value.configure(text="Reports: —")
-            return
-        latest, active = health
-        if latest:
-            try:
-                latest = datetime.strptime(latest + "-01", "%Y-%m-%d").strftime("%b %Y")
-            except ValueError:
-                pass
-        self.latest_value.configure(text=f"Latest sheet: {latest or 'No data'}")
-        self.reports_value.configure(text=f"{active:,} reports in use")
+    # ── Process checks (a closed workspace may have saved new results) ────────
 
     def check_project_process(self):
         if self.project_process is not None and self.project_process.poll() is None:
@@ -552,6 +812,14 @@ class AutomationSuite(ctk.CTk):
         else:
             self.launch_button.configure(state="normal", text="Open Vessel Report Centre")
             self._set_running("vessel", False)
+
+    def check_lub_process(self):
+        if self.lub_process is not None and self.lub_process.poll() is None:
+            self.after(1000, self.check_lub_process)
+        else:
+            self.oil_button.configure(state="normal", text="Open Lub Oil Review")
+            self._set_running("oil", False)
+            self.refresh_intelligence()
 
     def check_voyage_process(self):
         if self.voyage_process is not None and self.voyage_process.poll() is None:
@@ -566,6 +834,115 @@ class AutomationSuite(ctk.CTk):
         else:
             self.gc_button.configure(state="normal", text="Open Guarantee Claims")
             self._set_running("gc", False)
+            self.refresh_intelligence()
+
+    def check_cjc_process(self):
+        if self.cjc_process is not None and self.cjc_process.poll() is None:
+            self.after(1000, self.check_cjc_process)
+        else:
+            self.cjc_button.configure(state="normal", text="Open Critical Job Compliance")
+            self._set_running("cjc", False)
+            self.refresh_intelligence()
+
+    # ── Superintendent Inspection Report (local web server) ────────────────────
+
+    def open_inspection_reports(self, path=None):
+        port = inspection_server.server_port()
+        url = inspection_server.app_url(port) + (path or inspection_server.INSPECTIONS_PATH)
+        if self.sir_process is not None and self.sir_process.poll() is None:
+            if self.sir_mode is not None:  # already serving: open another browser tab
+                webbrowser.open(url)
+            return
+        state = inspection_server.probe(port)
+        if state == "sir":  # started earlier, outside this dashboard session
+            webbrowser.open(url)
+            self.refresh_intelligence(fetch_sir=True)
+            return
+        if state == "other":
+            messagebox.showerror(
+                "Port in use",
+                f"Another program is using port {port}, which the inspection app needs.\n\n"
+                "Close that program and try again. Reports saved in the browser belong to "
+                f"{inspection_server.app_url(port)}, so changing the port (SIR_PORT) would hide existing drafts.",
+                parent=self)
+            return
+        try:
+            SIR_LOG.parent.mkdir(exist_ok=True)
+            self.sir_process, mode = inspection_server.start_server(PROJECT_ROOT, port, SIR_LOG)
+        except (OSError, inspection_server.InspectionAppError) as error:
+            messagebox.showerror("Could not open Superintendent Inspection Report", str(error), parent=self)
+            return
+        self.sir_mode = None
+        self.sir_url = url
+        self.sir_button.configure(state="disabled", text="Starting server…")
+        process = self.sir_process
+
+        def wait():
+            self.sir_events.put((process, mode, inspection_server.wait_until_ready(process, port)))
+        threading.Thread(target=wait, daemon=True).start()
+        self.after(250, self.poll_sir_start)
+
+    def poll_sir_start(self):
+        try:
+            process, mode, ready = self.sir_events.get_nowait()
+        except queue.Empty:
+            self.after(250, self.poll_sir_start)
+            return
+        if process is not self.sir_process:
+            return  # stopped while starting
+        if not ready:
+            inspection_server.stop_server(process)
+            self.sir_process = None
+            self._reset_sir()
+            messagebox.showerror(
+                "Superintendent Inspection Report did not start",
+                f"The local server did not become ready.\n\nDetails: {SIR_LOG}", parent=self)
+            return
+        self.sir_mode = mode
+        self.sir_button.configure(state="normal", text="Open in browser")
+        self.sir_stop_button.pack(side="left", padx=(10, 0))
+        self._set_running("sir", True)
+        webbrowser.open(self.sir_url or inspection_server.inspections_url())
+        self.refresh_intelligence(fetch_sir=True)
+        self.after(1000, self.check_sir_process)
+
+    def check_sir_process(self):
+        if self.sir_process is not None and self.sir_process.poll() is None:
+            self.after(1000, self.check_sir_process)
+        elif self.sir_mode is not None:
+            self.sir_process = None
+            self._reset_sir()
+
+    def stop_inspection_reports(self):
+        # Keep the summary current before the server goes away.
+        try:
+            port = inspection_server.server_port()
+            if inspection_server.probe(port) == "sir":
+                home_intelligence.fetch_inspection_summary(port, timeout=5)
+        except Exception:
+            pass
+        inspection_server.stop_server(self.sir_process)
+        self.sir_process = None
+        self._reset_sir()
+        self.refresh_intelligence()
+
+    def _reset_sir(self):
+        self.sir_mode = None
+        self.sir_button.configure(state="normal", text="Open Inspection Reports")
+        self.sir_stop_button.pack_forget()
+        self._set_running("sir", False)
+
+    def on_close(self):
+        if self.sir_process is not None and self.sir_process.poll() is None:
+            if not messagebox.askokcancel(
+                    "Close NeraVeda",
+                    "Closing NeraVeda stops the Superintendent Inspection Report server.\n\n"
+                    "Work typed in the browser stays saved on this device and syncs the next time the app is open.",
+                    parent=self):
+                return
+            inspection_server.stop_server(self.sir_process)
+            self.sir_process = None
+        self.destroy()
 
     def open_project_folder(self):
         try:

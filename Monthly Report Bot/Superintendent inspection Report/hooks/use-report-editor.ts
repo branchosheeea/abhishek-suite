@@ -8,8 +8,25 @@ import { syncReport } from "@/lib/sync"
 
 export type SaveState = "idle" | "saving" | "saved" | "synced" | "sync-error"
 
+// A report that is not on this device yet (opened from a link or bookmark) is fetched from the cloud first.
+// Creating an empty draft instead would carry a newer timestamp and overwrite the cloud copy on the next sync.
+async function fetchFromCloud(id: string) {
+  if (!navigator.onLine) return null
+  try {
+    const res = await fetch(`/api/reports/${id}`, { cache: "no-store" })
+    if (!res.ok) return null
+    const { report, photos } = (await res.json()) as { report: Report; photos: Photo[] }
+    const local: Report = { ...createEmptyReport(id), ...report, deletedPhotoIds: [], syncedAt: report.updatedAt }
+    await putReport(local)
+    for (const photo of photos) await putPhoto({ ...photo, syncedAt: photo.updatedAt })
+    return local
+  } catch {
+    return null
+  }
+}
+
 async function loadOrCreate(id: string) {
-  const existing = await getReport(id)
+  const existing = (await getReport(id)) ?? (await fetchFromCloud(id))
   const report = existing ?? createEmptyReport(id)
   if (!existing) await putReport(report)
   const photos = await listPhotos(id)

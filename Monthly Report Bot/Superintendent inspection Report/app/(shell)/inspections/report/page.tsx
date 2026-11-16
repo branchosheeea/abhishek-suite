@@ -3,7 +3,7 @@ import { Suspense } from "react"
 import { ReportRoute } from "@/components/report/report-route"
 
 export const metadata: Metadata = {
-  title: "Edit report | Superintendent Inspection Report",
+  title: "Edit report · Inspection Reports",
 }
 
 export default function ReportPage() {

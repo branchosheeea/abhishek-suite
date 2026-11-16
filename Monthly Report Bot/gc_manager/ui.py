@@ -20,7 +20,7 @@ BG="#F5F6F8"; WHITE="#FFFFFF"; INK="#15191E"; MUTED="#737A84"; TEAL="#0C796F"; R
 class GCApp(ctk.CTk):
     def __init__(self, data_root=None):
         super().__init__()
-        self.repo=Repository(data_root); self.title("Guarantee Claim Manager · Neraveda")
+        self.repo=Repository(data_root); self.title("Guarantee Claim Manager · NeraVeda")
         self.geometry("1180x780"); self.minsize(940,620); self.configure(fg_color=BG)
         self.events=queue.Queue(); self.syncing=False
         header=ctk.CTkFrame(self,fg_color="transparent"); header.pack(fill="x",padx=24,pady=(18,8))

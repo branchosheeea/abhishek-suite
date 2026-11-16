@@ -1,4 +1,4 @@
-"""Entry point: python "Critical Jobs Compliance" (launched by the Neraveda suite)."""
+"""Entry point: python "Critical Jobs Compliance" (launched by the NeraVeda suite)."""
 import sys
 from pathlib import Path
 

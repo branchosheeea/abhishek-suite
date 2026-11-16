@@ -107,8 +107,8 @@ export function ReportEditor({ id }: { id: string }) {
       <header className="sticky top-0 z-20 border-b bg-background/85 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
           <Link
-            href="/"
-            aria-label="Back to all reports"
+            href="/inspections"
+            aria-label="Back to inspection reports"
             className={buttonVariants({ variant: "ghost", size: "icon" })}
           >
             <ChevronLeft aria-hidden />

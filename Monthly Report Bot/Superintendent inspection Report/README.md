@@ -23,28 +23,55 @@ This project helps ship management teams prepare and maintain Superintendent Det
 - MongoDB via `mongodb`
 - jsPDF + jsPDF AutoTable for PDF generation
 
+## Neraveda web shell
+
+This Next.js app is the **Neraveda web shell**. It hosts Neraveda's web workspaces inside the Suite's layout: a navy sidebar, the desktop dashboard's colours and Segoe UI. The Superintendent Inspection Report is its first module.
+
+| Route | What it is |
+| --- | --- |
+| `/` | Neraveda web home, listing the web workspaces |
+| `/inspections` | Inspection report list (module home) |
+| `/inspections/report?id=…` | Report editor |
+| `/report?id=…` | Old editor address: temporarily redirected (307) to `/inspections/report?id=…` |
+| `/api/reports`, `/api/reports/[id]`, `/api/reports/[id]/photos/[photoId]` | Report and photo sync API (unchanged) |
+| `/api/health` | Lets the desktop launcher recognise this server |
+
+Return paths: the sidebar (or the top bar on narrow screens) links to Home and each module, the list page has a `Neraveda › Inspection Reports` breadcrumb, and the editor's back arrow returns to `/inspections`.
+
+**Adding a module:** add an entry to `lib/modules.ts`, then create its pages under `app/(shell)/<route>/`. The sidebar and home page pick it up automatically. Keep API routes under `app/api/<module>/…`.
+
+**Storage stays where it was:** browser IndexedDB stores `sir-reports` / `sir-photos` for the `http://localhost:3000` origin, plus MongoDB database `inspections` (collections `reports`, `photos`). The route move changed no data, so no migration is needed. The service worker cache was renamed to `neraveda-shell-v3`; the old `sir-shell-v2` cache is removed automatically. There is no sign-in yet; the server only listens on `127.0.0.1`.
+
 ## Project structure
 
 ```text
 app/
-  api/                  # API routes for MongoDB-backed report sync
-  report/              # Report editor screen
-  page.tsx             # Dashboard/home page
+  (shell)/              # Pages inside the Neraveda layout
+    layout.tsx          # Sidebar / top bar (components/shell/app-shell.tsx)
+    page.tsx            # Neraveda web home
+    inspections/        # Inspection Reports module: list + report/ editor
+  api/                  # reports/ (MongoDB-backed sync), health/
 components/
-  dashboard/           # Report list UI
+  shell/               # Neraveda sidebar, brand and module badges
+  dashboard/           # Inspection report list UI
   report/              # Report editor sections and form components
   ui/                  # Shared UI primitives
 hooks/
   use-report-editor.ts  # Editing logic and autosave behavior
 lib/
+  modules.ts           # Registry of web workspaces
   form-schema.ts       # SIR form data model and section definitions
   local-db.ts          # Local IndexedDB access
   mongodb.ts           # MongoDB client and indexes
   pdf.ts               # PDF generation
   sync.ts              # Local/cloud sync logic
 public/
-  ...                  # Static assets and PWA files
+  ...                  # Static assets and PWA files (sw.js)
 ```
+
+## Opening from Neraveda
+
+This app is **Workspace 06** of the Neraveda automation suite (`Monthly Report Bot/abhishek_automation_suite.py`). Choose **Open Inspection Reports** on the dashboard: it starts this server on `http://localhost:3000` (no console window) and opens `/inspections` in the browser. It uses the production build when it is up to date and falls back to `next dev` otherwise, so after changing code run `npm run build` for faster start-up. Keep port 3000, because drafts saved in the browser belong to that address. The manual steps below still work on their own.
 
 ## Prerequisites
 
@@ -57,7 +84,7 @@ public/
 1. Open a terminal in the project root:
 
 ```bash
-cd "c:\Users\agupta\OneDrive - Goodwood Shipmanagement Pte Ltd\Work Related\Office Projects\Python Projects\Superintendent Inspection Report\Superintendent Inspection Report"
+cd "c:\Users\agupta\OneDrive - Goodwood Shipmanagement Pte Ltd\Work Related\Office Projects\Python Projects\Monthly Report Bot\Superintendent inspection Report"
 ```
 
 2. Install dependencies:
@@ -97,7 +124,7 @@ npm run dev
 6. Open the app in a browser:
 
 ```text
-http://localhost:3000
+http://localhost:3000/inspections
 ```
 
 ## Production build

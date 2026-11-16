@@ -31,7 +31,7 @@ def main():
     except Exception as error:
         ctypes.windll.user32.MessageBoxW(
             None, f"The app could not start or encountered an error.\n\n{error}\n\nDetails: {log_path}",
-            "Neraveda", 0x10,
+            "NeraVeda", 0x10,
         )
 
 

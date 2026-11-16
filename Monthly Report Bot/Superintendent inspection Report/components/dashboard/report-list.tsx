@@ -1,11 +1,12 @@
 "use client"
 
-import { Anchor, Copy, FileText, Plus, RefreshCw, Ship, Trash2 } from "lucide-react"
+import { ChevronRight, Copy, FileText, Plus, RefreshCw, Ship, Trash2 } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useEffect } from "react"
 import useSWR from "swr"
 import { toast } from "sonner"
+import { ModuleBadge } from "@/components/shell/app-shell"
 import { OnlinePill } from "@/components/status-pill"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -21,10 +22,13 @@ import {
   putReport,
   setPendingReportDeletes,
 } from "@/lib/local-db"
+import { WEB_MODULES } from "@/lib/modules"
 import { formatDate } from "@/lib/pdf"
 import { isPhotoDirty, isReportDirty, syncAll } from "@/lib/sync"
 
 type Row = { report: Report; photoCount: number; pending: boolean }
+
+const MODULE = WEB_MODULES.find((m) => m.id === "inspections")!
 
 async function loadRows(): Promise<Row[]> {
   const reports = await listReports()
@@ -71,7 +75,7 @@ export function ReportList() {
       }
     }
     await putReport(report)
-    router.push(`/report?id=${id}`)
+    router.push(`/inspections/report?id=${id}`)
   }
 
   const removeReport = async (id: string, name: string) => {
@@ -89,11 +93,19 @@ export function ReportList() {
     <div className="min-h-dvh">
       <header className="border-b">
         <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-4">
-          <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Anchor className="size-5" aria-hidden />
+          <span className="hidden sm:block">
+            <ModuleBadge module={MODULE} large />
           </span>
-          <div className="flex flex-1 flex-col">
-            <span className="text-sm font-semibold leading-tight">SIR Inspect</span>
+          <div className="flex min-w-0 flex-1 flex-col">
+            {/* On phones the NeraVeda top bar already shows the current workspace. */}
+            <nav aria-label="Breadcrumb" className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
+              <Link href="/" className="hover:text-foreground hover:underline">
+                NeraVeda
+              </Link>
+              <ChevronRight className="size-3" aria-hidden />
+              <span aria-current="page">{MODULE.navLabel}</span>
+            </nav>
+            <span className="truncate text-sm font-semibold leading-tight">{MODULE.title}</span>
             <span className="font-mono text-xs text-muted-foreground">Form {FORM_CODE}</span>
           </div>
           <OnlinePill />
@@ -169,7 +181,7 @@ export function ReportList() {
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <Link
-                          href={`/report?id=${report.id}`}
+                          href={`/inspections/report?id=${report.id}`}
                           className="truncate font-semibold after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:rounded-xl focus-visible:after:ring-3 focus-visible:after:ring-ring/50"
                         >
                           {name}

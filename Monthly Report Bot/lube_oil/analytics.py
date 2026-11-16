@@ -1237,8 +1237,10 @@ def decision_brief(report):
         elif abs(book - actual) > 0.1:
             stock_differences.append((oil, book - actual))
 
+    # priority: the branch order below (1 = most urgent); None when no priority exception was found.
     failed = [i for i in significant if i["severity"] == "FAIL"]
     if failed:
+        priority = 1
         issue = failed[0]
         headline = "Resolve report integrity issues before using its figures"
         action = "Ask the vessel to correct the affected labels or values and resubmit the sheet, then import it."
@@ -1246,6 +1248,7 @@ def decision_brief(report):
         value = "Prevents unsupported figures from entering confirmed operating and purchasing reviews."
         facts = []
     elif stock_differences:
+        priority = 2
         headline = "Reconcile stated stock before making a purchase decision"
         action = "Verify physical stock and the report's book basis; record a reviewed usable ROB before using this figure for replenishment."
         rationale = "The vessel-stated actual ROB and the report's book closing stock do not agree."
@@ -1257,12 +1260,14 @@ def decision_brief(report):
             for oil, difference in stock_differences
         ]
     elif stock_unavailable:
+        priority = 3
         headline = "Verify stock basis before using ROB for purchasing"
         action = "Confirm the book closing figure against physical stock, then record reviewed usable ROB."
         rationale = "A vessel-stated actual quantity is present, but a comparable book closing quantity is unavailable."
         value = "Avoids treating an incomplete stock comparison as a purchasing input."
         facts = [f"{oil['grade'] or oil['category']}: book closing is unavailable." for oil in stock_unavailable]
     elif any(i["code"].startswith(("hours:", "zero_hours:")) or i["code"] == "ae_reconciliation" for i in significant):
+        priority = 4
         relevant = next(i for i in significant if i["code"].startswith(("hours:", "zero_hours:")) or i["code"] == "ae_reconciliation")
         headline = "Validate operating data before comparing consumption"
         action = "Check the reporting period, machinery hours and pooled-versus-individual AE basis before using this month in efficiency or budget comparisons."
@@ -1270,6 +1275,7 @@ def decision_brief(report):
         value = "Keeps operating-rate comparisons grounded in reconciled hours and consumption."
         facts = []
     elif any(i["code"].startswith("system_balance:") for i in significant):
+        priority = 5
         relevant = next(i for i in significant if i["code"].startswith("system_balance:"))
         headline = "Reconcile system movements before classifying consumption or loss"
         action = "Check storage withdrawal, replenishment, system quantity movement and recorded change/loss against the source report."
@@ -1277,6 +1283,7 @@ def decision_brief(report):
         value = "Prevents storage movements from being mislabeled as engine consumption or physical loss."
         facts = []
     elif any(i["code"].startswith("renewal:") for i in significant):
+        priority = 6
         relevant = next(i for i in significant if i["code"].startswith("renewal:"))
         headline = "Confirm renewal evidence before adjusting the operating baseline"
         action = "Verify the engine, date and quantity from maintenance or vessel records; keep the quantity unknown until confirmed."
@@ -1284,6 +1291,7 @@ def decision_brief(report):
         value = "Avoids mixing renewal oil into normal operating consumption or a purchase forecast."
         facts = []
     elif significant:
+        priority = 7
         relevant = significant[0]
         headline = "Check the reported exception for this month"
         action = "Inspect the cited source cells and remarks, and follow up with the vessel if needed."
@@ -1291,6 +1299,7 @@ def decision_brief(report):
         value = "Makes the monthly decision traceable to its source evidence."
         facts = []
     else:
+        priority = None
         headline = "No priority exception detected in the parsed report"
         action = "No follow-up needed beyond routine monitoring."
         rationale = "This is not a finding that consumption is optimal or that the report is error-free."
@@ -1308,5 +1317,6 @@ def decision_brief(report):
         "business_value": value,
         "facts": facts,
         "boundary": boundary,
+        "priority": priority,
     }
 

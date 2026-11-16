@@ -2,21 +2,38 @@
 
 A Windows desktop workspace for collecting vessel report attachments from MariApps/PAL.
 
-## Neraveda
+## NeraVeda
 
-Neraveda (formerly Abhishek Automation Suite) combines Nereus, the Greek god of the sea, with *Veda*, Sanskrit for knowledge. Internal file names and the data folder `%LOCALAPPDATA%\AbhishekAutomationSuite` keep the original name so existing data stays connected.
+NeraVeda (formerly Abhishek Automation Suite) combines Nereus, the Greek god of the sea, with *Veda*, Sanskrit for knowledge. Internal file names and the data folder `%LOCALAPPDATA%\AbhishekAutomationSuite` keep the original name so existing data stays connected.
 
 Double-click **Neraveda.lnk** to open the dashboard without a terminal, or **Vessel Report Manager.lnk** to open the report app directly. These Windows shortcuts use the installed Python and require this project folder to stay in its current location. You can copy either shortcut to your desktop. Python and the dependencies are still required; this is not a standalone executable.
 
 Desktop startup errors appear in a dialog and are logged in `diagnostics/*_desktop.log`.
 
-The suite dashboard includes Vessel Report Manager as **Project 01**, Lub Oil Consumption Review as **Project 02**, Voyage Summary as **Project 03**, and Guarantee Claim Manager as **Project 04**, with a compact health summary for confirmed and pending lube-oil reports. Start the redesigned dashboard with:
+The NeraVeda home (Fleet Intelligence Suite) launches six workspaces: Vessel Report Centre (**01**), Lub Oil Consumption Review (**02**), Voyage Summary (**03**), Guarantee Claim Manager (**04**), Critical Job Compliance (**05**) and Superintendent Inspection Report (**06**). Start it with:
 
 ```powershell
 python abhishek_automation_suite.py
 ```
 
+### Fleet Intelligence home
+
+The home page shows **the latest results each workspace has already saved**, not live data, in three sections: **Latest Intelligence** (one tile per workspace: what is known, its period, and when it was processed), **Requires Attention** (the 3–4 highest-priority items, by severity, alternating between workspaces) and **Workspaces** (compact cards with an open action). It never fetches from MariApps, Outlook or vessels and never writes to workspace data: `suite_services/home_intelligence.py` opens the shared database read-only and applies each workspace's own rules. **Reload saved results** re-reads them; the page also reloads when a workspace window closes.
+
+| Workspace | What Home reads | Attention items |
+|---|---|---|
+| Vessel Report Centre | Nothing yet: run results are kept only while its window is open | None. Shows "Not connected to Home" |
+| Lub Oil Review | Sheets in use (`monthly_reports`), processing times, unresolved failed imports | `lube_oil.analytics.decision_brief` on each vessel's latest sheet (integrity failure = Action required; other priority exceptions = Review required); failed imports |
+| Voyage Summary | Nothing yet: it reads the noon report each time it opens | None. Shows "Not connected to Home" |
+| Guarantee Claims | Claim register, Outlook import time, review queue | `gc_manager.attention.calculate_attention`, applied today to the saved register (overdue/delivery overdue = Action required, as in the GC workspace) |
+| Critical Jobs | Saved extraction runs (`cjc_runs`) | Latest run per vessel that failed or did not reconcile. Compliance assessments are not saved yet, so no compliance exceptions are shown |
+| Superintendent Inspection | Web app summary from `/api/inspections/summary`, fetched while its server runs and cached in `%LOCALAPPDATA%\AbhishekAutomationSuite\home\inspections_summary.json` | Reports with condition items rated **Action required**. Report completion (draft % / signed off) is shown separately; the form has no finding-closure field |
+
+Missing data is never shown as zero or "all clear": a workspace without a saved result says *Not connected to Home*, *Not yet processed* or *Summary not loaded yet*; a failed run says so; a workspace whose results cannot be read shows *Could not read saved results* without affecting the others. To connect Vessel Report Centre or Voyage Summary later, each would save a small run summary (period, vessels, outcome, finished time) that `home_intelligence.py` can read.
+
 **Guarantee Claim Manager** maintains a vessel-and-GC claim register, status/timeline history, daily attention and an Outlook review queue. It uses the Suite's shared local SQLite database and CustomTkinter desktop pattern. Outlook is read-only; when Graph is not configured, import optional local JSON fixtures through the same deterministic subject-matching and deduplication flow. Configure Graph with the variables in `.env.example`; see [docs/GC_MODULE_README.md](docs/GC_MODULE_README.md) and [docs/GC_GRAPH_SETUP.md](docs/GC_GRAPH_SETUP.md). Launch it from the dashboard or directly with `python -m gc_manager`.
+
+**Superintendent Inspection Report** (Workspace 06) is the Inspection Reports module of the **NeraVeda web shell**, the Next.js app in [`Superintendent inspection Report/`](Superintendent%20inspection%20Report/README.md), for Superintendent's Detailed Inspection Reports (form 16.02.00.003.04). The web shell uses the Suite's layout and colours, serves the module at `/inspections`, and is where future web workspaces are added (`lib/modules.ts`). **Open Inspection Reports** starts its local server without a console window and opens `http://localhost:3000/inspections` in the default browser; once running, the button becomes **Open in browser** and **Stop server** appears. Closing NeraVeda stops the server after a confirmation. With a current build it runs `next start`; if source files are newer than the last `npm run build`, it runs `next dev` so changes are never served stale (slower first load). The server listens on `127.0.0.1` only, because the report API has no sign-in. Drafts are kept in the browser's IndexedDB for the `http://localhost:3000` origin, so keep port 3000: `SIR_PORT` exists, but a different port shows an empty report list. If port 3000 is used by another program the dashboard says so instead of starting; if the app is already running, it just opens the browser. Requirements: Node.js 18+ on PATH and `npm install` run once in the app folder; cloud sync needs `MONGODB_URI` in that folder's `.env.local`. Server output is logged to `diagnostics/superintendent_inspection_server.log`.
 
 Voyage Summary uses the supplied `Log Report 11 NOV 2026 Noon-.xlsx` **Noon at Sea** report as its source of truth. It looks first in `Voyage Summary` under the project folder, then in the current user's `Downloads` folder. The dashboard follows the supplied Nautix-style reference with section navigation, five voyage KPIs, passage progress, cargo/stability, grouped propulsion telemetry, auxiliary power, bunker accounting, and report remarks. Voyage status, speed, passage progress, ETA, engine telemetry, auxiliary-generator readings, cargo, drafts, environment, bunker accounting and oil-store values come from the noon report; unavailable readings are not filled with mock data. The passage graphic shows completed and remaining distance rather than inventing a historical track from a single report. Fuel totals marked with an asterisk are calculated from the report's component cells when a reported total is inconsistent or unavailable. If the report cannot be read, the module shows an error dialog with the expected file locations and access guidance. Window sizing and responsive layout account for display scaling; narrow layouts collapse the sidebar and stack panels, with scrolling for shorter windows.
 

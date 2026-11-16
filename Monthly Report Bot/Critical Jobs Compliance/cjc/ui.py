@@ -19,7 +19,7 @@ from .models import display_date
 from .store import MISMATCH, NOT_FOUND, VERIFIED, Store
 from .worker import ExtractionWorker, RunRequest
 
-# ── Colour tokens (shared with the Neraveda launcher) ────────────────────────
+# ── Colour tokens (shared with the NeraVeda launcher) ────────────────────────
 BG, SURFACE, INK, MUTED, FAINT, SEP = "#F3F6F9", "#FFFFFF", "#0F1B2A", "#5F6B7A", "#8A96A5", "#E3E8EE"
 NAVY = "#0E2A47"
 BTN, BTN_HV = "#1557A0", "#114888"
@@ -56,7 +56,7 @@ class ComplianceApp(ctk.CTk):
 
     def __init__(self, store: Store | None = None, session_factory=None):
         super().__init__()
-        self.title("Critical Job Compliance · Neraveda")
+        self.title("Critical Job Compliance · NeraVeda")
         self.geometry("1240x800")
         self.minsize(980, 600)
         self.configure(fg_color=BG)

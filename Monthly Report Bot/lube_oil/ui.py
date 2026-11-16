@@ -553,7 +553,7 @@ def draw_bars(canvas, months, series, stacked=False, notes=None):
 class ReviewApp(ctk.CTk):
     def __init__(self, root=None):
         super().__init__()
-        self.title("Lube Oil Intelligence | Neraveda")
+        self.title("Lube Oil Intelligence | NeraVeda")
         self.geometry("1520x940")
         self.minsize(1280, 760)
         self.configure(fg_color=BG)
@@ -588,7 +588,7 @@ class ReviewApp(ctk.CTk):
         sidebar = ctk.CTkFrame(self, width=236, fg_color=SIDEBAR, corner_radius=0)
         sidebar.grid(row=0, column=0, sticky="nsew")
         sidebar.grid_propagate(False)
-        self.label(sidebar, "Neraveda", 22, WHITE, True, justify="left").pack(
+        self.label(sidebar, "NeraVeda", 22, WHITE, True, justify="left").pack(
             anchor="w", padx=24, pady=(26, 2)
         )
         self.label(sidebar, "Maritime Engineering Insights", 11, SIDEBAR_MUTED).pack(
@@ -5318,7 +5318,7 @@ class ReviewApp(ctk.CTk):
         )
         self.label(
             window,
-            "Groups are shared across Neraveda. A vessel can belong to several groups; "
+            "Groups are shared across NeraVeda. A vessel can belong to several groups; "
             "a group needs at least two vessels.",
             11,
             MUTED,

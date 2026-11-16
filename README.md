@@ -8,7 +8,7 @@ Office automation tools for vessel reporting and inspection work.
 | [Monthly Report Bot](Monthly%20Report%20Bot/README.md) | Automation suite for monthly vessel reports, GC manager, lube oil and voyage summaries |
 | [Photo Assorter](Photo%20Assorter/README.md) | Inspection Intelligence: local photo sorting and classification for inspections |
 | [Running Hour Sheet](Running%20Hour%20Sheet/README.md) | Machinery running-hours sheet generator, dashboard and MERN app |
-| [Superintendent Inspection Report](Superintendent%20Inspection%20Report/Superintendent%20Inspection%20Report/README.md) | Next.js app for superintendent inspection reports |
+| [Superintendent Inspection Report](Monthly%20Report%20Bot/Superintendent%20inspection%20Report/README.md) | Next.js app for superintendent inspection reports; part of the Neraveda suite (Workspace 06) |
 
 Root scripts: `bot_ui.py`, `Ver2_download.py`.
 

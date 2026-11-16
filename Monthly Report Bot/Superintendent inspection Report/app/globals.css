@@ -5,8 +5,13 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  /* Same type as the NeraVeda desktop app (Segoe UI); no web-font download needed. */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --color-shell: var(--shell);
+  --color-shell-foreground: var(--shell-foreground);
+  --color-shell-hover: var(--shell-hover);
+  --color-shell-muted: var(--shell-muted);
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
@@ -36,31 +41,36 @@
   --radius-2xl: calc(var(--radius) * 1.8);
 }
 
+/* Light theme = the NeraVeda desktop palette (abhishek_automation_suite.py colour tokens). */
 :root {
   color-scheme: light;
   --radius: 0.625rem;
-  --background: oklch(0.982 0.004 247);
-  --foreground: oklch(0.22 0.035 255);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.22 0.035 255);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.22 0.035 255);
-  --primary: oklch(0.38 0.1 252);
-  --primary-foreground: oklch(0.985 0.003 247);
-  --secondary: oklch(0.95 0.01 250);
-  --secondary-foreground: oklch(0.28 0.05 255);
-  --muted: oklch(0.955 0.007 250);
-  --muted-foreground: oklch(0.5 0.025 255);
-  --accent: oklch(0.93 0.025 230);
-  --accent-foreground: oklch(0.3 0.07 250);
+  --background: #f3f6f9;
+  --foreground: #0f1b2a;
+  --card: #ffffff;
+  --card-foreground: #0f1b2a;
+  --popover: #ffffff;
+  --popover-foreground: #0f1b2a;
+  --primary: #1557a0;
+  --primary-foreground: #ffffff;
+  --secondary: #eef1f4;
+  --secondary-foreground: #0f1b2a;
+  --muted: #eef1f4;
+  --muted-foreground: #5f6b7a;
+  --accent: #e2f2f7;
+  --accent-foreground: #0e6e8c;
   --destructive: oklch(0.56 0.2 25);
-  --success: oklch(0.56 0.13 155);
-  --success-foreground: oklch(0.98 0.01 155);
+  --success: #1e7a45;
+  --success-foreground: #e3f4ea;
   --warning: oklch(0.78 0.15 75);
   --warning-foreground: oklch(0.28 0.06 60);
-  --border: oklch(0.9 0.01 250);
-  --input: oklch(0.88 0.012 250);
-  --ring: oklch(0.55 0.12 245);
+  --border: #e3e8ee;
+  --input: #d5dce4;
+  --ring: #1557a0;
+  --shell: #0e2a47;
+  --shell-foreground: #d3dfeb;
+  --shell-hover: #173a5e;
+  --shell-muted: #8fa6be;
 }
 
 .dark {
@@ -87,6 +97,10 @@
   --border: oklch(0.3 0.028 255);
   --input: oklch(0.33 0.03 255);
   --ring: oklch(0.65 0.12 235);
+  --shell: #0b1f35;
+  --shell-foreground: #d3dfeb;
+  --shell-hover: #173a5e;
+  --shell-muted: #8fa6be;
 }
 
 @layer base {

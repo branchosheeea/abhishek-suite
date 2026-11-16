@@ -11,7 +11,7 @@ export function ReportRoute() {
     return (
       <main className="flex min-h-dvh flex-col items-center justify-center gap-4 p-6 text-center">
         <h1 className="text-lg font-semibold">Report not found</h1>
-        <Link href="/" className={buttonVariants()}>
+        <Link href="/inspections" className={buttonVariants()}>
           Back to reports
         </Link>
       </main>

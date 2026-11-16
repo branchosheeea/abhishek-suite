@@ -1,1 +1,1 @@
-"""Critical Job Compliance workspace for Neraveda (Abhishek Automation Suite)."""
+"""Critical Job Compliance workspace for NeraVeda (Abhishek Automation Suite)."""

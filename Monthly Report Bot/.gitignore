@@ -10,3 +10,5 @@ data/
 diagnostics/lub_oil_pilot/
 diagnostics/lub_oil_ui*.png
 backups/
+# The Superintendent Inspection Report app keeps its source form template in data/
+!Superintendent inspection Report/data/
