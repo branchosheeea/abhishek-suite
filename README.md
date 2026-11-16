@@ -19,3 +19,4 @@ Virtualenvs, `node_modules`, ML models, browser profiles, `.env` files and vesse
 - Node: `npm install` (mern) or `pnpm install` (Next.js app)
 - Copy `.env.example` to `.env` / `.env.local` and fill in the values
 - Photo Assorter models: run `setup_fast_model.py`
+- 
