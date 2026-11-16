@@ -1,0 +1,21 @@
+{
+  "name": "running-hours-mern",
+  "private": true,
+  "workspaces": [
+    "api",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,green \"npm:dev --workspace @running-hours/api\" \"npm:dev --workspace @running-hours/web\"",
+    "build": "npm run build --workspace @running-hours/api && npm run build --workspace @running-hours/web",
+    "test": "npm run test --workspace @running-hours/api",
+    "migrate:dry-run": "npm run migrate --workspace @running-hours/api --",
+    "start": "npm run start --workspace @running-hours/api"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,71 @@
+# ---------- Secrets ----------
+.env
+.env.*
+!.env.example
+**/profiles/
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+.venv*/
+venv/
+.runtime*/
+.pytest_cache/
+build/
+release*/
+
+# ---------- Node / Next.js ----------
+node_modules/
+.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+yarn-*.log*
+.pnpm-debug.log*
+
+# ---------- Data, databases, runtime output ----------
+*.log
+*.log.*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.bak
+*.old
+*.tmp
+*.msg
+*.xlsx
+*.xls
+*.pdf
+*.onnx
+*.lnk
+
+# ---------- OS / editor ----------
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+
+# ---------- Monthly Report Bot ----------
+/Monthly Report Bot/GC Manager/
+/Monthly Report Bot/backups/
+/Monthly Report Bot/data/
+/Monthly Report Bot/diagnostics/*
+!/Monthly Report Bot/diagnostics/*.py
+
+# ---------- Photo Assorter ----------
+/Photo Assorter/models/
+/Photo Assorter/data/
+
+# ---------- Running Hour Sheet ----------
+/Running Hour Sheet/dashboard_data.json
+/Running Hour Sheet/dashboard_backups/
+/Running Hour Sheet/DHT_*_Import_Report.json
+/Running Hour Sheet/dashboard_review_*.png
+
+# ---------- Misc ----------
+/Fortnighly Bunker/New Text Document.txt

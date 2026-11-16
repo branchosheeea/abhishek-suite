@@ -1,0 +1,20 @@
+{
+  "review_required": "Review Required",
+  "level1": [
+    "Hull",
+    "Main Deck",
+    "Cargo Area",
+    "Tanks",
+    "Superstructure",
+    "Bridge",
+    "Accommodation",
+    "CCR",
+    "ECR",
+    "Engine Room",
+    "Steering Gear Room",
+    "Workshops & Stores",
+    "Safety Equipment",
+    "Documentation & Certificates",
+    "Review Required"
+  ]
+}

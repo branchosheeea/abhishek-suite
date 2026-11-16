@@ -1,0 +1,7 @@
+{
+  "ollama_url": "http://localhost:11434",
+  "model_name": "gemma3",
+  "request_timeout_seconds": 120,
+  "max_image_dimension": 1800,
+  "prompt_version": "level1-v1"
+}

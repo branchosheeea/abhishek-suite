@@ -1,0 +1,1 @@
+"""Local photograph storage access."""

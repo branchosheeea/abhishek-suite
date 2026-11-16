@@ -1,0 +1,18 @@
+Classify the primary location being inspected in this vessel inspection photograph.
+
+Choose exactly one Level 1 value from this approved taxonomy:
+{taxonomy}
+
+Apply these rules:
+- Classify the place being inspected, not merely machinery, equipment, or systems visible in the image.
+- A photograph taken on the Main Deck showing cargo tank structures is Main Deck; a photograph taken inside a cargo tank is Tanks.
+- Machinery inside a purifier room and a main engine are Engine Room.
+- External accommodation structure or stairways are Superstructure.
+- SCBA or EEBD is Safety Equipment regardless of its physical location.
+- Use Review Required when the primary location cannot be determined reliably.
+- Do not infer a location that is not supported by the photograph.
+
+Return only a JSON object with this exact shape:
+{"level1":"one approved taxonomy value","confidence":0.0,"reason":"brief evidence-based explanation"}
+
+Confidence must be a number from 0.0 to 1.0. Keep the reason concise and describe visible evidence; do not claim details that cannot be seen.

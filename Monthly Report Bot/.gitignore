@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+profiles/
+*.log
+*.log.*
+*.sqlite3
+*.sqlite3-*
+data/
+diagnostics/lub_oil_pilot/
+diagnostics/lub_oil_ui*.png
+backups/
