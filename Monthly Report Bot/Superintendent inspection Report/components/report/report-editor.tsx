@@ -30,12 +30,14 @@ import { ScopeSection } from "./scope-section"
 import { SectionNav } from "./section-nav"
 import { SignoffSection } from "./signoff-section"
 import { SummarySection } from "./summary-section"
-import { vesselIdFor } from "@/lib/vessels"
+import { applyLinkedChange, vesselNameMismatch } from "@/lib/linked-fields"
+import { outstandingBySection, outstandingForReview, reportStage } from "@/lib/completeness"
+import { AlertCircle, BadgeCheck, ShieldCheck } from "lucide-react"
 
 const DESCRIPTIONS: Partial<Record<SectionId, string>> = {
   details: "Who inspected which vessel, where and when.",
   particulars: "Key particulars of the vessel. Pre-fill once and reuse for future inspections.",
-  summary: "Build the preamble from structured selections, then record the high-level findings for owners and management.",
+  summary: "Each part is built from structured selections and checked against the rest of this report.",
   scope: "Tick every area covered during this inspection.",
   hull: "Inspect hull structure, coating, markings, and record findings.",
   mainDeck: "Inspect the main deck and record findings.",
@@ -51,7 +53,7 @@ const DESCRIPTIONS: Partial<Record<SectionId, string>> = {
   budget: "Record budget observations.",
   crew: "Record crew complement and key officers, then assess performance and training needs.",
   photos: "Up to 50 photographs can be included in the owners' report.",
-  signoff: "Confirm the work list and sign off the report.",
+  signoff: "The Superintendent signs; the Fleet Manager reviews and approves before submission.",
 }
 
 type StringKeys = "details" | "particulars" | "summary" | "management"
@@ -64,6 +66,8 @@ export function ReportEditor({ id }: { id: string }) {
 
   const progress = useMemo(() => (report ? sectionProgress(report, photos.length) : null), [report, photos.length])
   const overall = report ? overallProgress(report, photos.length) : 0
+  const outstanding = useMemo(() => (report ? outstandingForReview(report, photos.length) : []), [report, photos.length])
+  const outstandingMap = useMemo(() => outstandingBySection(outstanding), [outstanding])
 
   if (isLoading || !report || !progress) {
     return (
@@ -75,11 +79,12 @@ export function ReportEditor({ id }: { id: string }) {
   }
 
   const setString = (section: StringKeys) => (key: string, value: string) =>
-    update((r) => ({
-      ...r,
-      // The vessel id (fleet vessel or "OTHER") is kept next to the name wherever the name is edited.
-      [section]: { ...r[section], [key]: value, ...(section === "details" && key === "vessel" ? { vesselId: vesselIdFor(value) } : {}) },
-    }))
+    update((r) =>
+      // Details and Particulars share some facts (vessel name, port → place, inspection end → date): keep them in step.
+      section === "details" || section === "particulars"
+        ? applyLinkedChange(r, section, key, value)
+        : { ...r, [section]: { ...r[section], [key]: value } },
+    )
 
   const setCondition = (section: "deck" | "engine") => (key: string, entry: ConditionEntry) =>
     update((r) => ({ ...r, [section]: { ...r[section], [key]: entry } }))
@@ -125,6 +130,7 @@ export function ReportEditor({ id }: { id: string }) {
                 {report.details.reportNo ? `#${report.details.reportNo}` : `Form ${FORM_CODE}`}
               </span>
               <SavePill state={saveState} />
+              <StagePill stage={reportStage(report, photos.length)} outstanding={outstanding.length} onClick={() => go("signoff")} />
             </div>
           </div>
           <OnlinePill className="hidden sm:inline-flex" />
@@ -142,7 +148,7 @@ export function ReportEditor({ id }: { id: string }) {
 
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6 lg:flex-row lg:gap-10">
         <aside className="lg:sticky lg:top-28 lg:w-56 lg:shrink-0 lg:self-start">
-          <SectionNav active={active} progress={progress} onSelect={go} />
+          <SectionNav active={active} progress={progress} outstanding={outstandingMap} onSelect={go} />
         </aside>
 
         <main className="min-w-0 flex-1 scroll-mt-32" ref={topRef}>
@@ -152,6 +158,15 @@ export function ReportEditor({ id }: { id: string }) {
             </p>
             <h2 className="text-2xl font-semibold tracking-tight text-balance">{current.title}</h2>
             {DESCRIPTIONS[active] && <p className="text-sm text-muted-foreground text-pretty">{DESCRIPTIONS[active]}</p>}
+            {active !== "signoff" && outstandingMap.get(active)?.length ? (
+              <p className="mt-1 flex items-start gap-1.5 text-xs text-destructive">
+                <AlertCircle className="mt-px size-3.5 shrink-0" aria-hidden />
+                <span>
+                  Mandatory, still outstanding: {outstandingMap.get(active)!.map((item) => item.label).join("; ")}. Fields marked * must be completed before the
+                  report can be approved.
+                </span>
+              </p>
+            ) : null}
           </div>
 
           <SectionBody
@@ -165,6 +180,7 @@ export function ReportEditor({ id }: { id: string }) {
             addPhoto={addPhoto}
             updatePhoto={updatePhoto}
             removePhoto={removePhoto}
+            go={go}
           />
 
           <div className="mt-10 flex items-center justify-between border-t pt-6">
@@ -201,18 +217,61 @@ type BodyProps = {
   addPhoto: ReturnType<typeof useReportEditor>["addPhoto"]
   updatePhoto: ReturnType<typeof useReportEditor>["updatePhoto"]
   removePhoto: ReturnType<typeof useReportEditor>["removePhoto"]
+  go: (section: SectionId) => void
 }
 
-function SectionBody({ active, report, photos, setString, setCondition, update, saveNow, addPhoto, updatePhoto, removePhoto }: BodyProps) {
+function StagePill({ stage, outstanding, onClick }: { stage: ReturnType<typeof reportStage>; outstanding: number; onClick: () => void }) {
+  const styles = {
+    draft: "border-destructive/40 text-destructive",
+    "awaiting-approval": "border-primary/40 text-primary",
+    approved: "border-success/40 text-success",
+  }[stage]
+  const Icon = stage === "draft" ? AlertCircle : stage === "approved" ? BadgeCheck : ShieldCheck
+  const text =
+    stage === "draft" ? `DRAFT · ${outstanding} mandatory outstanding` : stage === "approved" ? "Approved by Fleet Manager" : "Awaiting Fleet Manager approval"
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${styles}`}
+      title="Open Sign-off"
+    >
+      <Icon className="size-3" aria-hidden />
+      {text}
+    </button>
+  )
+}
+
+function SectionBody({ active, report, photos, setString, setCondition, update, saveNow, addPhoto, updatePhoto, removePhoto, go }: BodyProps) {
   switch (active) {
     case "details":
       return <FieldGroups groups={DETAILS_GROUPS} values={report.details} idPrefix="details" onChange={setString("details")} />
-    case "particulars":
+    case "particulars": {
+      const mismatch = vesselNameMismatch(report)
       return (
-        <FieldGroups groups={PARTICULARS_GROUPS} values={report.particulars} idPrefix="particulars" onChange={setString("particulars")} />
+        <div className="flex flex-col gap-6">
+          {mismatch && (
+            <div className="flex flex-col gap-2 rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+              <p>
+                The vessel is “{mismatch.vessel}” in Inspection Details but “{mismatch.ship}” here. They are now linked: choose the spelling to use in
+                both.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => setString("details")("vessel", mismatch.vessel)}>
+                  Use “{mismatch.vessel}”
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => setString("details")("vessel", mismatch.ship)}>
+                  Use “{mismatch.ship}”
+                </Button>
+              </div>
+            </div>
+          )}
+          <FieldGroups groups={PARTICULARS_GROUPS} values={report.particulars} idPrefix="particulars" onChange={setString("particulars")} />
+        </div>
       )
+    }
     case "summary":
-      return <SummarySection report={report} update={update} saveNow={saveNow} onChange={setString("summary")} />
+      return <SummarySection report={report} update={update} saveNow={saveNow} />
     case "scope":
       return <ScopeSection values={report.scope} onChange={(scope) => update((r) => ({ ...r, scope }))} />
     case "hull": case "mainDeck": case "cargoBallast": case "deckMachinery": case "accommodation": case "safety": case "navigation": case "engine": {
@@ -220,7 +279,14 @@ function SectionBody({ active, report, photos, setString, setCondition, update, 
       return <ConditionList items={section.items} values={section.source === "deck" ? report.deck : report.engine} idPrefix={active} onChange={setCondition(section.source)} />
     }
     case "critical":
-      return <CriticalEquipmentSection values={report.management} onChange={setString("management")} />
+      return (
+        <CriticalEquipmentSection
+          values={report.management}
+          results={report.criticalResults ?? {}}
+          onChange={setString("management")}
+          onResult={(key, result) => update((r) => ({ ...r, criticalResults: { ...(r.criticalResults ?? {}), [key]: result } }))}
+        />
+      )
     case "system": case "survey": case "budget": case "crew":
       return (
         <FieldGroups groups={MANAGEMENT_SECTION_GROUPS[active]} values={report.management} idPrefix={active} onChange={setString("management")} />
@@ -231,8 +297,11 @@ function SectionBody({ active, report, photos, setString, setCondition, update, 
       return (
         <SignoffSection
           report={report}
+          photoCount={photos.length}
           onWorklist={(key, value) => update((r) => ({ ...r, worklist: { ...r.worklist, [key]: value } }))}
           onSignoff={(patch) => update((r) => ({ ...r, signoff: { ...r.signoff, ...patch } }))}
+          onDetails={(patch) => update((r) => ({ ...r, details: { ...r.details, ...patch } }))}
+          onGoTo={go}
         />
       )
   }

@@ -17,7 +17,7 @@ const ALLOWED_KEYS = [
 
 // Saved only when the request includes them. A browser tab still running an older version of the app does not
 // send these, and must not wipe what a newer version saved.
-const OPTIONAL_KEYS = ["narratives"] as const
+const OPTIONAL_KEYS = ["narratives", "criticalResults"] as const
 
 const MAX_BODY_BYTES = 2_000_000
 

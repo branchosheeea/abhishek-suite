@@ -94,6 +94,8 @@ const controlClass =
 
 type BaseProps = {
   field: string
+  /** Explicit DOM id; defaults to the Preamble's `preamble-<field>` convention. */
+  id?: string
   label: string
   required?: boolean
   hint?: ReactNode
@@ -107,6 +109,7 @@ export type SelectOption = { id: string; label: string; disabled?: boolean }
 
 export function SelectField({
   field,
+  id: idOverride,
   label,
   required,
   hint,
@@ -126,7 +129,7 @@ export function SelectField({
   onChange: (value: string) => void
   recommendation?: ReactNode
 }) {
-  const id = fieldId(field)
+  const id = idOverride ?? fieldId(field)
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       <FieldLabel htmlFor={id} label={label} required={required} tooltip={tooltip} />
@@ -155,6 +158,7 @@ export function SelectField({
 
 export function TextField({
   field,
+  id: idOverride,
   label,
   required,
   hint,
@@ -176,7 +180,7 @@ export function TextField({
   list?: string
   inputMode?: "numeric" | "text"
 }) {
-  const id = fieldId(field)
+  const id = idOverride ?? fieldId(field)
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       <FieldLabel htmlFor={id} label={label} required={required} tooltip={tooltip} />
@@ -202,6 +206,7 @@ export function TextField({
 
 export function TextAreaField({
   field,
+  id: idOverride,
   label,
   hint,
   tooltip,
@@ -212,7 +217,7 @@ export function TextAreaField({
   placeholder,
   onChange,
 }: BaseProps & { value: string; placeholder?: string; onChange: (value: string) => void }) {
-  const id = fieldId(field)
+  const id = idOverride ?? fieldId(field)
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       <FieldLabel htmlFor={id} label={label} tooltip={tooltip} />
@@ -234,6 +239,7 @@ export function TextAreaField({
 /** A multi-select checkbox group (spec: MultiSelectField). Exclusive options are handled by the caller's onChange. */
 export function MultiSelectField({
   field,
+  id: idOverride,
   label,
   required,
   hint,
@@ -253,7 +259,7 @@ export function MultiSelectField({
   recommended?: readonly string[]
   columns?: 1 | 2
 }) {
-  const id = fieldId(field)
+  const id = idOverride ?? fieldId(field)
   return (
     <fieldset
       id={id}
@@ -308,6 +314,7 @@ export function MultiSelectField({
 /** A single confirmation checkbox, e.g. "Bunkering operations were witnessed". */
 export function ConfirmField({
   field,
+  id: idOverride,
   label,
   hint,
   messages = {},
@@ -315,7 +322,7 @@ export function ConfirmField({
   checked,
   onChange,
 }: BaseProps & { checked: boolean; onChange: (checked: boolean) => void }) {
-  const id = fieldId(field)
+  const id = idOverride ?? fieldId(field)
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={id} className={cn("flex cursor-pointer items-start gap-2.5 text-sm leading-snug", disabled && "cursor-not-allowed opacity-60")}>

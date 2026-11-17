@@ -96,6 +96,32 @@ export function joinList(items: string[], conjunction = "and") {
   return `${list.slice(0, -1).join(", ")}${serial} ${conjunction} ${list[list.length - 1]}`
 }
 
+/** Semicolons are needed only for a series of three or more where an item already contains a comma. */
+function hasComma(items: string[]) {
+  return items.length >= 3 && items.some((item) => item.includes(","))
+}
+
+/**
+ * Joins noun phrases. Plain items use commas and "and" (see joinList); if any item contains a comma, the series uses
+ * semicolons: "PMS records, cross-checked against the machinery; hours of rest records; and near-miss reports".
+ */
+export function joinNouns(items: string[]) {
+  const list = items.filter(Boolean)
+  if (list.length > 1 && hasComma(list)) return `${list.slice(0, -1).join("; ")}; and ${list[list.length - 1]}`
+  return joinList(list)
+}
+
+/**
+ * Joins independent clauses: "A, and B" / "A, B, and C", or semicolons when any clause contains a comma.
+ * The comma before "and" keeps each clause readable when clauses themselves contain "and".
+ */
+export function joinClauses(items: string[]) {
+  const list = items.filter(Boolean)
+  if (list.length <= 1) return list[0] ?? ""
+  if (hasComma(list)) return `${list.slice(0, -1).join("; ")}; and ${list[list.length - 1]}`
+  return `${list.slice(0, -1).join(", ")}, and ${list[list.length - 1]}`
+}
+
 /**
  * Joins noun phrases that take "the": one shared article for one or two items (as in
  * "the associated inspection worklist and Defect and Damage Report List"), and one article per item
@@ -136,7 +162,7 @@ export function placeholderProblems(text: string): string[] {
   if (hasGap(text)) problems.push("Missing information marker left in the text")
   if (/[[\]{}]/.test(text)) problems.push("Unresolved placeholder in brackets")
   if (/<[^>]*>/.test(text)) problems.push("Unresolved placeholder in angle brackets")
-  if (/\b(?:undefined|null|NaN|TODO|TBA|TBC|XXX)\b/.test(text)) problems.push("Unresolved placeholder value")
+  if (/\b(?:undefined|null|NaN|TODO|TBA|TBC|X{3,})\b/.test(text)) problems.push("Unresolved placeholder value")
   if (/ {2,}/.test(text)) problems.push("Double space")
   if (/ [,.;:]|[,;:]\s*[,.;:]|\.\s*\./.test(text)) problems.push("Empty or doubled punctuation")
   return problems

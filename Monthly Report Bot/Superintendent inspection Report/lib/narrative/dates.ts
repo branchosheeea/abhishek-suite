@@ -34,6 +34,12 @@ export function formatDate(value: string | undefined) {
   return parts ? `${parts.day} ${MONTHS[parts.month - 1]} ${parts.year}` : ""
 }
 
+/** "December 2024", or "" for a missing or invalid date. */
+export function formatMonthYear(value: string | undefined) {
+  const parts = parseIsoDate(value)
+  return parts ? `${MONTHS[parts.month - 1]} ${parts.year}` : ""
+}
+
 /**
  * The date or date range without its preposition:
  *   same day        → "25 September 2026"

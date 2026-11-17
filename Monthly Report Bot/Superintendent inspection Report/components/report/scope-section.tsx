@@ -17,7 +17,9 @@ export function ScopeSection({ values, onChange }: Props) {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
-          The scope of this inspection covered the following areas.{" "}
+          The scope of this inspection covered the following areas{" "}
+          <span className="text-destructive" aria-hidden>*</span>
+          <span className="sr-only">(select at least one, mandatory)</span>.{" "}
           <span className="font-mono font-semibold text-foreground">
             {checked}/{SCOPE_ITEMS.length}
           </span>{" "}

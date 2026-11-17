@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server"
 import { CONDITION_SECTIONS, createEmptyReport, overallProgress, type Report } from "@/lib/form-schema"
 import { getDb } from "@/lib/mongodb"
+import { isFinal } from "@/lib/completeness"
+import { keyFigures } from "@/lib/condition-overview"
 
 // Lightweight, read-only summary for the NeraVeda desktop home page.
 // Covers reports synced to the cloud database only; drafts that exist only in a browser are not visible here.
-// Ratings use the form's own scale: "poor" is shown to users as "Action required", "fair" as "Monitor".
-// The form has no finding-closure field, so closure status is not reported.
+// Field names are kept for the desktop home page: "actionRequired" lists items rated Deficient (plus Action required on
+// the earlier rating scale) and "monitorCount" counts Degraded items (plus earlier Monitor). Condition ratings are not
+// risk ratings. Open findings and Immediate actions come from the report's findings register.
 
 const CONDITION_ITEMS = CONDITION_SECTIONS.flatMap((section) =>
   section.items.map((item) => ({ key: item.key, label: item.label, source: section.source })),
@@ -26,7 +29,7 @@ export async function GET() {
     const reports = docs.map((doc) => {
       const report = { ...createEmptyReport(String(doc.id)), ...(doc as unknown as Partial<Report>) } as Report
       const ratings = CONDITION_ITEMS.map((item) => ({ label: item.label, rating: report[item.source]?.[item.key]?.rating ?? "" }))
-      const signoff = report.signoff ?? {}
+      const figures = keyFigures(report)
       return {
         id: report.id,
         vessel: (report.details?.vessel || report.particulars?.shipName || "").trim(),
@@ -36,9 +39,12 @@ export async function GET() {
         dateTo: report.details?.dateTo ?? "",
         updatedAt: report.updatedAt,
         progress: overallProgress(report, photos.get(report.id) ?? 0),
-        signedOff: Boolean(signoff.superintendentName?.trim() && signoff.superintendentSignature),
-        actionRequired: ratings.filter((r) => r.rating === "poor").map((r) => r.label),
-        monitorCount: ratings.filter((r) => r.rating === "fair").length,
+        // Signed off = every mandatory input complete and approved by the Fleet Manager.
+        signedOff: isFinal(report, photos.get(report.id) ?? 0),
+        actionRequired: ratings.filter((r) => r.rating === "deficient" || r.rating === "poor").map((r) => r.label),
+        monitorCount: ratings.filter((r) => r.rating === "degraded" || r.rating === "fair").length,
+        immediateCount: figures.immediate,
+        openFindings: figures.openFindings,
         ratedCount: ratings.filter((r) => r.rating).length,
         itemCount: CONDITION_ITEMS.length,
       }

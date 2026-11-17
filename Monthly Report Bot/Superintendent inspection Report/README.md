@@ -56,18 +56,22 @@ components/
   dashboard/           # Inspection report list UI
   report/              # Report editor sections and form components
     preamble/          # Executive Summary – Preamble builder (forms, live preview, validation summary)
+    narrative/         # Shared section shell + generic form renderer for the other summary fields
   ui/                  # Shared UI primitives
 hooks/
   use-report-editor.ts  # Editing logic and autosave behavior
 lib/
   modules.ts           # Registry of web workspaces
   narrative/           # Controlled-narrative engine (no React): text/date helpers, preamble options,
-                       #   model, generator and validation
+                       #   model, generator and validation; section.ts (generic engine), context.ts
+                       #   (facts from the report), sections/ (the six other summary fields)
   vessels.ts           # Fleet list (mirrors report_catalog.VESSELS in the desktop suite)
   form-schema.ts       # SIR form data model and section definitions
   local-db.ts          # Local IndexedDB access
   mongodb.ts           # MongoDB client and indexes
   pdf.ts               # PDF generation
+  condition-overview.ts # Worst condition per area, coverage, critical tests, findings register (no risk scores)
+  completeness.ts      # Mandatory inputs, DRAFT / awaiting approval / approved
   sync.ts              # Local/cloud sync logic
 public/
   ...                  # Static assets and PWA files (sw.js)
@@ -153,7 +157,9 @@ npm run start
 - Sync report data and images to MongoDB when online
 - View progress for each section
 - Export final inspection report as PDF
+- Rate condition on four grades, record findings with priority, RA and defect-list references, and record critical-test results (see below)
 - Attach photographs to sections of the report
+- Sign by drawing on the pad, or upload an image of the signature (PNG, JPG or WebP): the paper background is removed and the signature is fitted to the signature line
 - Generate the Executive Summary preamble from structured selections (see below)
 
 ## Executive Summary – Preamble builder
@@ -165,7 +171,7 @@ npm run start
 3. Examination, records and focus areas
 4. Findings, follow-up and acknowledgment
 
-The other six summary fields are unchanged, under **Other summary fields**.
+The other six summary fields use the same method; see the next section.
 
 **Deterministic.** `lib/narrative/preamble/generate.ts` builds the text from fixed templates, so the same selections always give the same wording, and no AI service is used.
 - Hidden conditional fields never contribute stale values.
@@ -193,10 +199,83 @@ The other six summary fields are unchanged, under **Other summary fields**.
 - **Save preamble** writes the generated text to `summary.preamble`, which the PDF already reads. If the report holds a preamble that was not produced by the builder, the app asks before replacing it.
 - **Status:** Draft, Under Review or Final. **Final** saves the text and locks the selections.
 
-**Adding the next section** (Overall Condition, Machinery Condition…) follows the same pattern:
-1. Add options, a model, a generator and validation under `lib/narrative/<section>/`.
-2. Add its state under `report.narratives.<section>`. The ids are listed in `lib/narrative/types.ts`.
-3. Reuse the form primitives in `components/report/preamble/fields.tsx`.
+## Executive Summary – the other six fields
+
+**Overall Condition, Structural Condition, Operational Condition, Performance, Significant Problems** and **Projects and Upgrades** use the same controlled method as the Preamble. Each has its own tab under Executive Summary, and none is a free-text box any more.
+
+The wording comes from a review of 27 completed Superintendent's Detailed Inspection Reports (8 Superintendents, 13 vessels, 2023–2026) and the company's Superintendent Detailed Inspection Checklist. The builders keep the structure those reports share. They also close the gaps a TMSA, vetting or PSC reviewer would raise:
+
+- **Verification is stated.** Each finding says whether it was *tested*, *reviewed from records* or *reported by the ship's staff*. Coverage limits are given with their reason, for example tanks inerted or ballasted, darkness, or no cargo on board.
+- **Facts come from the report itself.** The rating summary (counts of Satisfactory, Acceptable, Degraded and Deficient items) is taken from the Vessel Condition Report. No average and no risk figure is derived from condition ratings. The number of critical equipment items tested is taken from the Critical Equipment section.
+- **Cross-checks** warn when the summary contradicts the report:
+  - a favourable assessment, "no defects" or "no significant problems" while items are rated Deficient;
+  - "no operational issues" while a defective BWTS, EGCS or other equipment is selected;
+  - expired, or soon-to-expire, Flag dispensations and Conditions of Class;
+  - an underwater inspection older than the SMS six-monthly interval;
+  - a CII rating of D or E (SEEMP Part III);
+  - a PSC detention;
+  - safety-critical defects (LSA, FFA, navigation, GMDSS, steering, pollution prevention) not yet reported to the Company;
+  - modifications not under Management of Change (TMSA element 7).
+- **Compliance vocabulary:**
+  - IACS coating condition (GOOD / FAIR / POOR) and the Load Line Convention;
+  - MARPOL Annex VI (EGCS, SCR) and Annexes I and V (OWS tampering, ORB and GRB);
+  - US VGP ballast-water sampling and EEXI / EPL;
+  - STCW and MLC hours of rest;
+  - Master's Review, near-miss close-out and PSC preparation.
+- **Results are specific.** SIRE 2.0, PSC, USCG, Flag, Class and audit results are entered as a list: type, by whom, place, date, number of findings (SIRE positive and negative observations), close-out status and the Company KPI.
+- **Problems and projects are entered as lists.**
+  - Problems: system → defect → impact → actions → expected completion → dispensation or Condition of Class validity.
+  - Projects: what → status → timing → reason → Class approval, certificate reissue and Management of Change.
+- **Placeholders are blocked.** That includes "XXXX", which reached a final report in the sample.
+
+The engine is generic (`lib/narrative/section.ts`). A section is a data definition (`lib/narrative/sections/*.ts`): field specs with conditional rules, a paragraph generator and section-specific checks. `components/report/narrative/` renders any definition and shares the header, status, save and copy logic, and the replace-protection with the Preamble. Text already typed into these fields in older reports is kept, and is replaced only after confirmation. Selections are saved in `report.narratives.<sectionId>`, and the text in `summary.<field>`.
+
+**Adding another section** (for example Machinery Condition):
+1. Write a `SectionSpec` in `lib/narrative/sections/`.
+2. Add it to `SUMMARY_SECTIONS`, or place it where it belongs in the editor.
+3. Add tests in `tests/narrative/`.
+
+## Condition ratings, findings and the Condition & Assurance Overview
+
+**Ratings.** Each inspection item is rated with one of four condition grades, or one of two other options. The definitions are shown in the editor and printed in the PDF.
+
+| Rating | Meaning | Needs |
+|---|---|---|
+| Satisfactory | As expected for age and service; no defects | – |
+| Acceptable | Minor wear or cosmetic defects; fit for purpose; routine maintenance | – |
+| Degraded | Deterioration beyond normal wear, or reduced performance / redundancy; requirements still met | remarks + finding |
+| Deficient | A statutory, Class, Flag, maker's or SMS requirement is not met, or the item does not work as required (non-conformity) | remarks + finding with RA status |
+| Not inspected | Could not be inspected | the reason |
+| Not applicable | Not fitted / outside scope | – |
+
+A condition rating describes what was observed. It is **not a risk rating**: risk is assessed under the Company's risk assessment procedure, and the report only quotes the RA number and its status.
+
+**Findings register.** Every Degraded or Deficient item, and every critical-equipment test with a defect, gets an entry:
+- a reference, e.g. `ENG-02` or `CRT-06`;
+- the corrective action and interim controls;
+- the priority: Immediate, Priority, Planned or Next dry-docking;
+- the due date;
+- whether it is safety-critical;
+- the RA status and number;
+- the defect-list (DDRL / PMS) number;
+- whether it is open or was closed during the attendance.
+
+**Critical equipment.** Each of the 39 ISM Code 10.3 tests is recorded as Not tested, Satisfactory or Defect found.
+
+**Overview.** The PDF shows the Condition & Assurance Overview, which the editor also shows in Sign-off. It contains:
+- a conclusion line, withheld while any item is unrated;
+- the key figures: coverage, critical tests, Deficient items (non-conformities), Immediate actions, open findings, RA pending;
+- the worst observed condition, counts and coverage per area (Complete / Limited / Incomplete);
+- the rating definitions;
+- the findings register;
+- the inspection limitations: each Not inspected item with its reason.
+
+Condition is reported by the worst finding in each area, never by an average. The logic lives in `lib/condition-overview.ts`.
+
+**Earlier ratings.** Reports rated before the four grades keep their ratings unchanged:
+- "Satisfactory" reads as Satisfactory;
+- "Monitor" and "Action required" are shown as earlier-scale ratings and must be re-rated before a draft can be approved;
+- reports already approved stay approved.
 
 ## Tests
 

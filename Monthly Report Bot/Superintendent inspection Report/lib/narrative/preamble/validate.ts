@@ -177,7 +177,7 @@ export function validatePreamble(
       error(field, "Remove placeholder text such as [ ], { } or TBA.")
     }
   }
-  if (/[[\]{}]|\b(?:TBA|TBC|XXX)\b/.test(facts.vesselName)) error("vessel", "Remove placeholder text from the vessel name.")
+  if (/[[\]{}]|\b(?:TBA|TBC|X{3,})\b/.test(facts.vesselName)) error("vessel", "Remove placeholder text from the vessel name.")
   if (generated && errors.every((e) => !FREE_TEXT_FIELDS.includes(e.field as PreambleField))) {
     const problems = placeholderProblems(generated.text)
     if (problems.length) error("preview", `The generated text needs attention: ${problems.join("; ")}.`)

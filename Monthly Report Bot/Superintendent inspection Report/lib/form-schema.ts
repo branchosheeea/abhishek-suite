@@ -1,18 +1,28 @@
 import type { PreambleState } from "./narrative/preamble/model"
+import type { SectionState } from "./narrative/section"
+import type { NarrativeSectionId } from "./narrative/types"
+import { SUPERINTENDENTS } from "./superintendents"
 
 export const FORM_CODE = "16.02.00.003.04"
 export const FORM_TITLE = "Superintendent's Detailed Inspection Report"
 
-export type FieldType = "text" | "date" | "textarea" | "number" | "select"
+export type FieldType = "text" | "date" | "textarea" | "number" | "select" | "combo"
 
 export type FieldDef = {
   key: string
   label: string
+  /** "combo": a dropdown of `options` plus "Other (type a name)" for anything not listed. */
   type?: FieldType
   unit?: string
   placeholder?: string
   span?: 1 | 2 | 3
-  options?: string[]
+  options?: readonly string[]
+  /** Date fields only: the date must be in the past and before the date held in this other field. */
+  before?: string
+  /** Mandatory: marked * and must be completed before the Fleet Manager can approve the report. */
+  required?: boolean
+  /** Short help shown under the field. */
+  hint?: string
 }
 
 export type FieldGroup = {
@@ -25,21 +35,21 @@ export const DETAILS_GROUPS: FieldGroup[] = [
   {
     title: "Vessel & Visit",
     fields: [
-      { key: "vessel", label: "Vessel", placeholder: "e.g. MV Ocean Star" },
-      { key: "port", label: "Port", placeholder: "e.g. Singapore" },
-      { key: "dateFrom", label: "Inspection from", type: "date" },
-      { key: "dateTo", label: "Inspection to", type: "date" },
-      { key: "reportNo", label: "Inspection report no.", placeholder: "e.g. SIR-2026-014" },
-      { key: "lastInspection", label: "Date of last inspection", type: "date" },
-      { key: "nextInspection", label: "Next planned inspection", type: "date" },
+      { key: "vessel", label: "Vessel", placeholder: "e.g. MV Ocean Star", required: true, hint: "Also fills Ship name in Principal Particulars." },
+      { key: "port", label: "Port", placeholder: "e.g. Singapore", required: true },
+      { key: "dateFrom", label: "Inspection from", type: "date", required: true },
+      { key: "dateTo", label: "Inspection to", type: "date", required: true },
+      { key: "reportNo", label: "Inspection report no.", placeholder: "e.g. SIR-2026-014", required: true },
+      { key: "lastInspection", label: "Date of last inspection", type: "date", before: "dateFrom" },
+      { key: "nextInspection", label: "Next planned inspection", type: "date", required: true },
     ],
   },
   {
     title: "Inspected by",
     fields: [
-      { key: "inspectedBy", label: "Name" },
-      { key: "inspectedDate", label: "Date", type: "date" },
-      { key: "inspectedPlace", label: "Place" },
+      { key: "inspectedBy", label: "Name", type: "combo", options: SUPERINTENDENTS, required: true },
+      { key: "inspectedDate", label: "Date", type: "date", required: true, hint: "Filled from Inspection to; change it if the report is dated differently." },
+      { key: "inspectedPlace", label: "Place", required: true, hint: "Filled from Port; change it if different." },
     ],
   },
 ]
@@ -48,19 +58,19 @@ export const PARTICULARS_GROUPS: FieldGroup[] = [
   {
     title: "Identification",
     fields: [
-      { key: "shipName", label: "Ship name" },
-      { key: "imo", label: "IMO no.", placeholder: "7 digits" },
-      { key: "flag", label: "Flag" },
-      { key: "portOfRegistry", label: "Port of registry" },
+      { key: "shipName", label: "Ship name", required: true, hint: "Linked to Vessel in Inspection Details: editing either updates both." },
+      { key: "imo", label: "IMO no.", placeholder: "7 digits", required: true },
+      { key: "flag", label: "Flag", required: true },
+      { key: "portOfRegistry", label: "Port of registry", required: true },
       { key: "officialNo", label: "Official no." },
       { key: "callSign", label: "Call sign" },
       { key: "hullNo", label: "Hull no." },
-      { key: "yearBuilt", label: "Year of built", type: "number" },
+      { key: "yearBuilt", label: "Year of built", type: "number", required: true },
       { key: "builder", label: "Builder" },
-      { key: "shipType", label: "Ship type" },
-      { key: "owners", label: "Owners" },
-      { key: "managers", label: "Managers" },
-      { key: "classification", label: "Classification" },
+      { key: "shipType", label: "Ship type", required: true },
+      { key: "owners", label: "Owners", required: true },
+      { key: "managers", label: "Managers", required: true },
+      { key: "classification", label: "Classification", required: true },
       { key: "classNotation", label: "Class notation" },
       { key: "shipDescription", label: "Ship's description", type: "textarea", span: 3 },
     ],
@@ -72,7 +82,7 @@ export const PARTICULARS_GROUPS: FieldGroup[] = [
       { key: "breadth", label: "Breadth, moulded", unit: "m" },
       { key: "depth", label: "Depth, moulded", unit: "m" },
       { key: "draft", label: "Draft (summer)", unit: "m" },
-      { key: "deadweight", label: "Deadweight", unit: "mt" },
+      { key: "deadweight", label: "Deadweight", unit: "mt", required: true },
       { key: "lightweight", label: "Lightweight", unit: "mt" },
       { key: "grossTonnage", label: "Gross tonnage (ITC)" },
       { key: "netTonnage", label: "Net tonnage" },
@@ -109,13 +119,13 @@ export const PARTICULARS_GROUPS: FieldGroup[] = [
 ]
 
 export const SUMMARY_FIELDS: FieldDef[] = [
-  { key: "preamble", label: "Preamble", type: "textarea" },
-  { key: "overall", label: "Overall condition", type: "textarea" },
-  { key: "structural", label: "Structural condition", type: "textarea" },
-  { key: "operational", label: "Operational condition", type: "textarea" },
-  { key: "performance", label: "Performance", type: "textarea" },
-  { key: "problems", label: "Significant problems", type: "textarea" },
-  { key: "projects", label: "Projects and upgrades", type: "textarea" },
+  { required: true, key: "preamble", label: "Preamble", type: "textarea" },
+  { required: true, key: "overall", label: "Overall condition", type: "textarea" },
+  { required: true, key: "structural", label: "Structural condition", type: "textarea" },
+  { required: true, key: "operational", label: "Operational condition", type: "textarea" },
+  { required: true, key: "performance", label: "Performance", type: "textarea" },
+  { required: true, key: "problems", label: "Significant problems", type: "textarea" },
+  { required: true, key: "projects", label: "Projects and upgrades", type: "textarea" },
 ]
 
 export const SCOPE_ITEMS: { key: string; label: string }[] = [
@@ -252,23 +262,23 @@ export const MANAGEMENT_GROUPS: FieldGroup[] = [
   {
     title: "Planned Maintenance System",
     fields: [
-      { key: "pmsLast", label: "Evaluation of implementation for last 3 months", type: "textarea" },
-      { key: "pmsNext", label: "Evaluation of plan for next 3 months", type: "textarea" },
+      { key: "pmsLast", label: "Evaluation of implementation for last 3 months", type: "textarea", required: true },
+      { key: "pmsNext", label: "Evaluation of plan for next 3 months", type: "textarea", required: true },
     ],
   },
   {
     title: "Status & Crew",
     fields: [
-      { key: "survey", label: "Survey status", type: "textarea" },
-      { key: "budget", label: "Budget", type: "textarea" },
-      { key: "crew", label: "Crew evaluation / training needs", type: "textarea" },
+      { key: "survey", label: "Survey status", type: "textarea", required: true },
+      { key: "budget", label: "Budget", type: "textarea", required: true },
+      { key: "crew", label: "Crew evaluation / training needs", type: "textarea", required: true },
     ],
   },
   {
     title: "Critical Equipment",
     description:
       "Critical equipment listed in 14.07.02.002 (Critical Equipment Performance form) to be tested and performance evaluated. Mention equipment tried out with the parameters.",
-    fields: [{ key: "critical", label: "Critical equipment findings", type: "textarea" }],
+    fields: [{ key: "critical", label: "Critical equipment findings", type: "textarea", required: true }],
   },
 ]
 
@@ -292,7 +302,7 @@ export const MANAGEMENT_SECTION_GROUPS: Record<"critical" | "system" | "survey" 
       
           ],
         },
-        { key: "totalCrew", label: "Total crew onboard", type: "select", options: Array.from({ length: 31 }, (_, count) => String(count)) },
+        { key: "totalCrew", label: "Total crew onboard", type: "select", options: Array.from({ length: 31 }, (_, count) => String(count)), required: true },
         { key: "officersCount", label: "Officers", type: "select", options: Array.from({ length: 16 }, (_, count) => String(count)) },
         { key: "otherCrewCount", label: "Crew / ratings", type: "select", options: Array.from({ length: 21 }, (_, count) => String(count)) },
       ],
@@ -300,9 +310,9 @@ export const MANAGEMENT_SECTION_GROUPS: Record<"critical" | "system" | "survey" 
     {
       title: "Management Officers",
       fields: [
-        { key: "masterName", label: "Master", span: 2 },
+        { key: "masterName", label: "Master", span: 2, required: true },
         { key: "masterMonths", label: "Months onboard", type: "number", unit: "months" },
-        { key: "chiefEngineerName", label: "Chief Engineer", span: 2 },
+        { key: "chiefEngineerName", label: "Chief Engineer", span: 2, required: true },
         { key: "chiefEngineerMonths", label: "Months onboard", type: "number", unit: "months" },
         { key: "chiefOfficerName", label: "Chief Officer", span: 2 },
         { key: "chiefOfficerMonths", label: "Months onboard", type: "number", unit: "months" },
@@ -368,45 +378,113 @@ export const PHOTO_CATEGORIES = [
 
 export const MAX_OWNER_PHOTOS = 50
 
+/**
+ * Condition ratings: four condition grades, plus Not inspected and Not applicable. A rating describes the observed
+ * condition; it is not a risk rating (risk is assessed under the Company's risk assessment procedure).
+ */
 export const RATINGS = [
-  { value: "good", label: "Satisfactory", short: "SAT" },
-  { value: "fair", label: "Monitor", short: "MON" },
-  { value: "poor", label: "Action required", short: "ACT" },
-  { value: "na", label: "Not applicable", short: "N/A" },
+  { value: "satisfactory", label: "Satisfactory", short: "SAT", definition: "As expected for age and service; no defects." },
+  { value: "acceptable", label: "Acceptable", short: "ACC", definition: "Minor wear or cosmetic defects; fit for purpose; routine maintenance." },
+  {
+    value: "degraded",
+    label: "Degraded",
+    short: "DEG",
+    definition: "Deterioration beyond normal wear, or reduced performance or redundancy; requirements still met; corrective action by a due date.",
+  },
+  {
+    value: "deficient",
+    label: "Deficient",
+    short: "DEF",
+    definition: "A statutory, Class, Flag, maker’s or SMS requirement is not met, or the item does not work as required: a non-conformity needing immediate action and controls.",
+  },
+  { value: "notInspected", label: "Not inspected", short: "N/I", definition: "Could not be inspected during the attendance; the reason is recorded." },
+  { value: "na", label: "Not applicable", short: "N/A", definition: "Not fitted, or outside the scope of this inspection." },
 ] as const
 
-export type Rating = (typeof RATINGS)[number]["value"] | ""
+/**
+ * Ratings recorded before the four-grade scale. They are never rewritten: "good" reads as Satisfactory (same
+ * definition); "fair" and "poor" keep their original meaning and must be re-rated in reports not yet approved.
+ */
+export const LEGACY_RATINGS = [
+  { value: "good", label: "Satisfactory", short: "SAT" },
+  { value: "fair", label: "Monitor (earlier scale)", short: "MON" },
+  { value: "poor", label: "Action required (earlier scale)", short: "ACT" },
+] as const
 
-export type ConditionEntry = { rating: Rating; remarks: string }
+export type CurrentRating = (typeof RATINGS)[number]["value"]
+export type LegacyRating = (typeof LEGACY_RATINGS)[number]["value"]
+export type Rating = CurrentRating | LegacyRating | ""
+
+/** The rating as used by the report: earlier "good" becomes "satisfactory"; everything else is unchanged. */
+export const effectiveRating = (rating: Rating | undefined): Rating => (rating === "good" ? "satisfactory" : rating ?? "")
+
+export function ratingLabel(rating: Rating | undefined) {
+  const value = effectiveRating(rating)
+  return [...RATINGS, ...LEGACY_RATINGS].find((r) => r.value === value)?.label ?? ""
+}
+
+/** Ratings that need remarks: the finding, or the reason the item was not inspected. */
+export const needsRemarks = (rating: Rating | undefined) =>
+  rating === "degraded" || rating === "deficient" || rating === "notInspected"
+/** Ratings that need a findings-register entry. */
+export const needsFinding = (rating: Rating | undefined) => rating === "degraded" || rating === "deficient"
+/** Earlier-scale ratings that must be re-rated before a report can be approved. */
+export const isLegacyToRerate = (rating: Rating | undefined) => rating === "fair" || rating === "poor"
+
+export const FINDING_PRIORITIES = [
+  { value: "immediate", label: "Immediate", hint: "Controls now; rectify before the vessel proceeds or as soon as possible" },
+  { value: "priority", label: "Priority", hint: "Rectify by the due date" },
+  { value: "planned", label: "Planned", hint: "Through the PMS or routine maintenance by the due date" },
+  { value: "drydock", label: "Next dry-docking", hint: "Deferred to the next dry-docking" },
+] as const
+
+export const RA_STATUSES = [
+  { value: "notRequired", label: "Not required" },
+  { value: "pending", label: "Pending" },
+  { value: "completed", label: "Completed" },
+] as const
+
+export type FindingPriority = (typeof FINDING_PRIORITIES)[number]["value"]
+export type RaStatus = (typeof RA_STATUSES)[number]["value"]
+
+/** Findings-register entry for a Degraded or Deficient item, or for a critical-equipment test with a defect. */
+export type Finding = {
+  /** Corrective action and interim controls. */
+  action: string
+  priority: FindingPriority | ""
+  /** ISO date; not needed for Next dry-docking or once closed. */
+  dueDate: string
+  safetyCritical: boolean
+  raStatus: RaStatus | ""
+  /** Company risk assessment number, when one applies. */
+  raRef: string
+  /** Defect list (DDRL / PMS) number. */
+  defectRef: string
+  status: "open" | "closed"
+}
+
+/** Condition items treated as safety-critical by default (the Superintendent can change it per finding). */
+export const SAFETY_CRITICAL_ITEMS = ["lsa", "ffa", "navigation", "steering"]
+
+export function emptyFinding(safetyCritical = false): Finding {
+  return { action: "", priority: "", dueDate: "", safetyCritical, raStatus: "", raRef: "", defectRef: "", status: "open" }
+}
+
+export type ConditionEntry = { rating: Rating; remarks: string; finding?: Finding }
+
+/** Result of a critical-equipment test (ISM Code 10.3). A defect carries its description and a finding. */
+export type CriticalResult = { result: "satisfactory" | "defect" | ""; description?: string; finding?: Finding }
+
+/** Critical-equipment tests ticked as carried out (older reports may use a legacy key). */
+export const isCriticalTested = (item: (typeof CRITICAL_EQUIPMENT_ITEMS)[number], management: Record<string, string> | undefined) =>
+  management?.[item.key] === "true" || Boolean(item.legacyKeys?.some((key) => management?.[key] === "true"))
 
 /**
  * Structured inputs behind generated narrative sections (see lib/narrative). The generated text itself is also
  * written to the matching plain field (e.g. `summary.preamble`), which the PDF and summaries already read.
  * Older reports have no `narratives`; treat it as optional everywhere.
  */
-export type Narratives = { preamble?: PreambleState }
-
-const CONDITION_RISK_POINTS = {
-  good: 20,
-  fair: 40,
-  poor: 80,
-} as const
-
-export function conditionRiskScore(values: Record<string, ConditionEntry | undefined>) {
-  const scores = Object.values(values).flatMap((entry) => {
-    const rating = entry?.rating
-    if (rating === "good" || rating === "fair" || rating === "poor") return [CONDITION_RISK_POINTS[rating]]
-    return []
-  })
-  return scores.length ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length) : null
-}
-
-export function conditionRiskBand(score: number) {
-  if (score < 30) return "Low Risk"
-  if (score < 50) return "Moderate Risk"
-  if (score < 70) return "High Risk"
-  return "Very High Risk"
-}
+export type Narratives = { preamble?: PreambleState } & { [K in Exclude<NarrativeSectionId, "preamble">]?: SectionState }
 
 export type Report = {
   id: string
@@ -421,10 +499,18 @@ export type Report = {
   deck: Record<string, ConditionEntry>
   engine: Record<string, ConditionEntry>
   management: Record<string, string>
+  /** Results of the critical-equipment tests ticked in `management` (optional: older reports have none). */
+  criticalResults?: Record<string, CriticalResult>
   signoff: {
+    /** Superintendent's signature (the person named under Inspected by). */
+    superintendentSignature: string
+    /** Fleet Manager's review and approval: the report is submitted once these are complete. */
+    fleetManagerName?: string
+    fleetManagerDate?: string
+    fleetManagerSignature?: string
+    /** Older reports only: a separate "Inspector" signature and a separately typed sign-off name. Kept, not edited. */
     inspectorSignature: string
     superintendentName: string
-    superintendentSignature: string
   }
   narratives?: Narratives
   deletedPhotoIds: string[]
@@ -456,7 +542,7 @@ export function createEmptyReport(id: string): Report {
     deck: {},
     engine: {},
     management: {},
-    signoff: { inspectorSignature: "", superintendentName: "", superintendentSignature: "" },
+    signoff: { superintendentSignature: "", fleetManagerName: "", fleetManagerDate: "", fleetManagerSignature: "", inspectorSignature: "", superintendentName: "" },
     narratives: {},
     deletedPhotoIds: [],
   }
@@ -545,9 +631,11 @@ export function sectionProgress(
     photos: { done: Math.min(photoCount, 1), total: 1 },
     signoff: {
       done:
-        (filled(report.signoff.superintendentName) ? 1 : 0) +
-        (report.signoff.superintendentSignature ? 1 : 0),
-      total: 2,
+        (report.signoff.superintendentSignature || report.signoff.inspectorSignature ? 1 : 0) +
+        (filled(report.signoff.fleetManagerName) ? 1 : 0) +
+        (filled(report.signoff.fleetManagerDate) ? 1 : 0) +
+        (report.signoff.fleetManagerSignature ? 1 : 0),
+      total: 4,
     },
   }
 }

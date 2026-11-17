@@ -110,4 +110,15 @@
   body {
     @apply bg-background text-foreground font-sans;
   }
+  /* Native dropdown lists. Selects use a translucent background in dark mode, which the browser cannot draw in the
+     open option list: it falls back to a light system colour under light text and the options become unreadable.
+     Solid theme colours keep every dropdown in the app legible in both themes. */
+  select option,
+  select optgroup {
+    background-color: var(--popover);
+    color: var(--popover-foreground);
+  }
+  select option:disabled {
+    color: var(--muted-foreground);
+  }
 }
