@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server"
 import { getDb, ID_PATTERN } from "@/lib/mongodb"
+import { route } from "@/lib/server/http"
 
 type Ctx = { params: Promise<{ id: string; photoId: string }> }
 
 const MAX_PHOTO_BYTES = 3_500_000
 const DATA_URL_PATTERN = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/
 
-export async function PUT(req: Request, { params }: Ctx) {
+export const PUT = route<Ctx>({ mutating: true, limit: ["write", 600] }, async (req, { params }) => {
   const { id, photoId } = await params
   if (!ID_PATTERN.test(id) || !ID_PATTERN.test(photoId)) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 })
@@ -39,9 +40,9 @@ export async function PUT(req: Request, { params }: Ctx) {
   const db = await getDb()
   await db.collection("photos").updateOne({ id: photoId, reportId: id }, { $set: doc }, { upsert: true })
   return NextResponse.json({ status: "ok" })
-}
+})
 
-export async function DELETE(_req: Request, { params }: Ctx) {
+export const DELETE = route<Ctx>({ mutating: true, limit: ["write", 600] }, async (_req, { params }) => {
   const { id, photoId } = await params
   if (!ID_PATTERN.test(id) || !ID_PATTERN.test(photoId)) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 })
@@ -49,4 +50,4 @@ export async function DELETE(_req: Request, { params }: Ctx) {
   const db = await getDb()
   await db.collection("photos").deleteOne({ id: photoId, reportId: id })
   return NextResponse.json({ status: "ok" })
-}
+})

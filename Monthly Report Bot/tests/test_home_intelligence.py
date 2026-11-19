@@ -43,7 +43,7 @@ class HomeIntelligenceTests(unittest.TestCase):
         intel = home.load_all(self.root, TODAY)
         self.assertEqual(list(intel), list(home.ORDER))
         expected = {"vessel": "not_connected", "oil": "none", "voyage": "not_connected",
-                    "gc": "none", "cjc": "none", "sir": "not_connected"}
+                    "gc": "none", "cjc": "none", "sir": "not_connected", "evi": "not_connected"}
         self.assertEqual({k: v.state for k, v in intel.items()}, expected)
         for item in intel.values():
             for text in _texts(item):

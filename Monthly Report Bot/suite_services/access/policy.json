@@ -1,0 +1,4 @@
+{
+  "required": false,
+  "_comment": "Set required to true when NeraVeda is rolled out to colleagues: sign-in then becomes mandatory on every PC, and a PC without sign-in settings cannot open any workspace."
+}

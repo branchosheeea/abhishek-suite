@@ -15,6 +15,7 @@ from abhishek_automation_suite import (
     start_gc_manager,
 )
 from suite_services import home_intelligence
+from suite_services.access.testing import FakeAccess
 
 
 class SuiteLauncherTests(unittest.TestCase):
@@ -78,9 +79,9 @@ class SuiteLauncherTests(unittest.TestCase):
                 start_lub_oil_review(Path(temporary_directory))
 
     def test_inspection_report_is_workspace_six(self):
-        app = AutomationSuite()
+        app = AutomationSuite(access=FakeAccess())
         try:
-            self.assertEqual(len(app._cards), 6)
+            self.assertEqual(len(app._cards), 7)  # 07 is DNV Emissions Validation
             self.assertEqual(app.sir_button.cget("text"), "Open Inspection Reports")
             self.assertEqual(app.title(), "NeraVeda")
             self.assertEqual(list(app.tiles), list(home_intelligence.ORDER))
@@ -88,7 +89,7 @@ class SuiteLauncherTests(unittest.TestCase):
             app.destroy()
 
     def test_unavailable_results_render_as_states_not_zero(self):
-        app = AutomationSuite()
+        app = AutomationSuite(access=FakeAccess())
         try:
             with tempfile.TemporaryDirectory() as empty:
                 app.intel = home_intelligence.load_all(Path(empty))
@@ -105,7 +106,7 @@ class SuiteLauncherTests(unittest.TestCase):
             app.destroy()
 
     def test_review_opens_the_workspace_that_produced_the_item(self):
-        app = AutomationSuite()
+        app = AutomationSuite(access=FakeAccess())
         try:
             item = home_intelligence.Attention(home_intelligence.REVIEW, "DHT COLT", "Reconcile stock", "reason",
                                                "oil", "October 2026 sheet", "Imported 11 Nov")
@@ -117,12 +118,12 @@ class SuiteLauncherTests(unittest.TestCase):
             with patch("abhishek_automation_suite.inspection_server.probe", return_value="sir"), \
                     patch("abhishek_automation_suite.webbrowser.open") as browser:
                 app.review(sir_item)
-            browser.assert_called_once_with("http://localhost:3000/inspections/report?id=abcdefgh12")
+            browser.assert_called_once_with("http://localhost:3000/api/auth/enter?t=test&next=/inspections/report?id=abcdefgh12")
         finally:
             app.destroy()
 
     def test_workspace_buttons_take_keyboard_focus_and_show_a_ring(self):
-        app = AutomationSuite()
+        app = AutomationSuite(access=FakeAccess())
         try:
             app.update()
             # Tab traversal reaches the home and workspace controls, in reading order.
@@ -133,7 +134,7 @@ class SuiteLauncherTests(unittest.TestCase):
                     break
                 order.append(str(widget))
             buttons = [str(b) for b in (app.reload_button, app.launch_button, app.oil_button, app.voyage_button,
-                                         app.gc_button, app.cjc_button, app.sir_button)]
+                                         app.gc_button, app.cjc_button, app.sir_button, app.evi_button)]
             self.assertEqual([name for name in order if name in buttons], buttons)
             # Focus the button itself, as Tab does (CTkButton.focus_force targets its inner label).
             tk.Frame.focus_force(app.oil_button)
@@ -152,19 +153,19 @@ class SuiteLauncherTests(unittest.TestCase):
             app.destroy()
 
     def test_inspection_report_reuses_a_server_that_is_already_running(self):
-        app = AutomationSuite()
+        app = AutomationSuite(access=FakeAccess())
         try:
             with patch("abhishek_automation_suite.inspection_server.probe", return_value="sir"), \
                     patch("abhishek_automation_suite.inspection_server.start_server") as start, \
                     patch("abhishek_automation_suite.webbrowser.open") as browser:
                 app.open_inspection_reports()
             start.assert_not_called()
-            browser.assert_called_once_with("http://localhost:3000/inspections")
+            browser.assert_called_once_with("http://localhost:3000/api/auth/enter?t=test&next=/inspections")
         finally:
             app.destroy()
 
     def test_inspection_report_refuses_a_port_used_by_another_program(self):
-        app = AutomationSuite()
+        app = AutomationSuite(access=FakeAccess())
         try:
             with patch("abhishek_automation_suite.inspection_server.probe", return_value="other"), \
                     patch("abhishek_automation_suite.inspection_server.start_server") as start, \
@@ -176,7 +177,7 @@ class SuiteLauncherTests(unittest.TestCase):
             app.destroy()
 
     def test_launcher_scrolls_when_content_exceeds_window(self):
-        app = AutomationSuite()
+        app = AutomationSuite(access=FakeAccess())
         try:
             app.minsize(1, 1)
             app.geometry("920x360")

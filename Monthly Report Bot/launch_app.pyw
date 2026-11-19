@@ -11,17 +11,23 @@ def main():
     root = Path(__file__).resolve().parent
     os.chdir(root)
     if "--reports" in sys.argv:
-        script = "vessel_report/__main__.py"
+        # Run as a package (its __main__ uses a relative import); it checks the NeraVeda session itself.
+        module, script = "vessel_report", None
         log_path = root / "diagnostics" / "vessel_report_desktop.log"
     else:
-        script = "abhishek_automation_suite.py"
+        module, script = None, "abhishek_automation_suite.py"
         log_path = root / "diagnostics" / "abhishek_automation_suite_desktop.log"
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
     try:
         log_path.parent.mkdir(exist_ok=True)
         with log_path.open("a", encoding="utf-8", buffering=1) as log:
             sys.stdout = sys.stderr = log
             try:
-                runpy.run_path(str(root / script), run_name="__main__")
+                if module:
+                    runpy.run_module(module, run_name="__main__", alter_sys=True)
+                else:
+                    runpy.run_path(str(root / script), run_name="__main__")
             except Exception:
                 traceback.print_exc()
                 raise

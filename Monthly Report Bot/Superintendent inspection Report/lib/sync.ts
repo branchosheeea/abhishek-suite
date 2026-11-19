@@ -1,5 +1,6 @@
 "use client"
 
+import { apiFetch } from "./api"
 import type { Photo, Report } from "./form-schema"
 import {
   deletePhotoLocal,
@@ -25,13 +26,13 @@ async function pushReport(id: string) {
   if (!report) return
 
   for (const photoId of report.deletedPhotoIds ?? []) {
-    const res = await fetch(`/api/reports/${id}/photos/${photoId}`, { method: "DELETE" })
+    const res = await apiFetch(`/api/reports/${id}/photos/${photoId}`, { method: "DELETE" })
     if (!res.ok) throw new Error("Photo delete failed")
   }
 
   if (isReportDirty(report)) {
     const { deletedPhotoIds: _omit, syncedAt: _s, ...payload } = report
-    const res = await fetch(`/api/reports/${id}`, {
+    const res = await apiFetch(`/api/reports/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -41,7 +42,7 @@ async function pushReport(id: string) {
 
   for (const photo of await listPhotos(id)) {
     if (!isPhotoDirty(photo)) continue
-    const res = await fetch(`/api/reports/${id}/photos/${photo.id}`, {
+    const res = await apiFetch(`/api/reports/${id}/photos/${photo.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(photo),
@@ -65,7 +66,7 @@ async function pushReport(id: string) {
 type RemoteSummary = { id: string; updatedAt: number }
 
 async function pullReports() {
-  const res = await fetch("/api/reports", { cache: "no-store" })
+  const res = await apiFetch("/api/reports", { cache: "no-store" })
   if (!res.ok) throw new Error("Could not fetch reports")
   const { reports: remote } = (await res.json()) as { reports: RemoteSummary[] }
   const local = new Map((await listReports()).map((r) => [r.id, r]))
@@ -76,7 +77,7 @@ async function pullReports() {
     const existing = local.get(summary.id)
     if (existing && (existing.updatedAt >= summary.updatedAt || isReportDirty(existing))) continue
 
-    const detail = await fetch(`/api/reports/${summary.id}`, { cache: "no-store" })
+    const detail = await apiFetch(`/api/reports/${summary.id}`, { cache: "no-store" })
     if (!detail.ok) continue
     const { report, photos } = (await detail.json()) as { report: Report; photos: Photo[] }
     await putReport({ ...report, deletedPhotoIds: [], syncedAt: report.updatedAt })
@@ -93,7 +94,7 @@ async function flushReportDeletes() {
   const pending = getPendingReportDeletes()
   const remaining: string[] = []
   for (const id of pending) {
-    const res = await fetch(`/api/reports/${id}`, { method: "DELETE" }).catch(() => null)
+    const res = await apiFetch(`/api/reports/${id}`, { method: "DELETE" }).catch(() => null)
     if (!res?.ok) remaining.push(id)
   }
   setPendingReportDeletes(remaining)

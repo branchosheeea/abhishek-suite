@@ -5,9 +5,9 @@ Deleting a group archives it, so its change history is kept.
 """
 from __future__ import annotations
 from datetime import datetime, timezone
-import getpass
 import json
 
+from .actor import current_actor
 from .database import connection, initialize
 
 MINIMUM_VESSELS = 2
@@ -19,7 +19,7 @@ def _now():
 
 def _history(db, group_id, action, detail):
     db.execute("INSERT INTO vessel_group_history(group_id,action,detail,actor,created_at) VALUES(?,?,?,?,?)",
-               (group_id, action, json.dumps(detail), getpass.getuser(), _now()))
+               (group_id, action, json.dumps(detail), current_actor(), _now()))
 
 
 def _members(db, group_id):
@@ -64,7 +64,7 @@ def save_group(root, name, vessels, description=None, group_id=None):
         if group_id is None:
             group_id = db.execute(
                 "INSERT INTO vessel_groups(name,description,created_by,created_at,updated_at) VALUES(?,?,?,?,?)",
-                (name, description, getpass.getuser(), stamp, stamp)).lastrowid
+                (name, description, current_actor(), stamp, stamp)).lastrowid
             old = None
         else:
             existing = db.execute("SELECT name,description FROM vessel_groups WHERE id=? AND archived_at IS NULL",

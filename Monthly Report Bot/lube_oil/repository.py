@@ -1,11 +1,11 @@
 """Durable historical imports, activation, provenance and Lube Oil Intelligence master data."""
 from __future__ import annotations
 from datetime import date, datetime, timezone
-import getpass
 import json
 from pathlib import Path
 import shutil
 import sqlite3
+from suite_services.actor import current_actor
 from suite_services.database import connection, initialize
 from suite_services.storage import archive_file, runtime_root
 from .budget import BUDGET_CATEGORIES
@@ -325,7 +325,7 @@ class Repository:
     @staticmethod
     def _audit(db, report_id, action, note):
         db.execute("INSERT INTO audit_events(report_id,action,note,actor,created_at) VALUES(?,?,?,?,?)",
-                   (report_id, action, note, getpass.getuser(), now()))
+                   (report_id, action, note, current_actor(), now()))
 
     def reports(self, active_only=False):
         with connection(self.root) as db:
@@ -365,7 +365,7 @@ class Repository:
     @staticmethod
     def _master_audit(db, table, key, old, new, reason):
         db.execute("INSERT INTO master_data_audit(table_name,record_key,old_value,new_value,reason,actor,created_at) VALUES(?,?,?,?,?,?,?)",
-                   (table, key, json.dumps(old) if old is not None else None, json.dumps(new), reason, getpass.getuser(), now()))
+                   (table, key, json.dumps(old) if old is not None else None, json.dumps(new), reason, current_actor(), now()))
 
     def budget_basis(self, vessel, year):
         with connection(self.root) as db:
@@ -581,7 +581,7 @@ class Repository:
             return db.execute("""INSERT INTO cost_variance_comments(vessel_id,period,oil_category,oil_grade,report_id,event_id,
                 variance_type,comment,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                               (vessel_id, period, category, grade, report_id, event_id, variance_type, comment.strip(),
-                               getpass.getuser(), stamp, stamp)).lastrowid
+                               current_actor(), stamp, stamp)).lastrowid
 
     def comments(self, vessel, period=None):
         with connection(self.root) as db:

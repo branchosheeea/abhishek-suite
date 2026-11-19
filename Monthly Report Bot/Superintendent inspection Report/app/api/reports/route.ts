@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server"
 import { getDb } from "@/lib/mongodb"
+import { route } from "@/lib/server/http"
 
-export async function GET() {
+export const GET = route({ mutating: false }, async () => {
   try {
     const db = await getDb()
     const reports = await db
@@ -15,4 +16,4 @@ export async function GET() {
     console.error("[reports:list]", error)
     return NextResponse.json({ error: "Failed to load reports" }, { status: 500 })
   }
-}
+})

@@ -6,6 +6,7 @@ rules and analysis.
 """
 from __future__ import annotations
 
+import functools
 import os
 import queue
 import subprocess
@@ -20,7 +21,8 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from vessel_report.scroll_input import ScrollRouter
-from suite_services import home_intelligence, inspection_server
+from suite_services import emissions_server, home_intelligence, inspection_server
+from suite_services.access.session import AccessDenied, AccessService, SessionExpired
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -59,6 +61,7 @@ _MOD: dict[str, dict] = {
     "gc":     {"accent": "#A86B10", "tint": "#FCF3E2", "badge": "GCM"},
     "cjc":    {"accent": "#B03A2E", "tint": "#FBECEA", "badge": "CJC"},
     "sir":    {"accent": "#0E6E8C", "tint": "#E2F2F7", "badge": "SIR"},
+    "evi":    {"accent": "#2F6B4F", "tint": "#E9F1EC", "badge": "EVI"},
 }
 
 CJC_FOLDER = "Critical Jobs Compliance"
@@ -131,28 +134,55 @@ WORKSPACES = (
     ("sir", "VESSEL INSPECTION", "06", "Superintendent Inspection Report",
      "Offline inspection reports with photos, cloud sync and PDF export.",
      "Open Inspection Reports", "Superintendent Inspection"),
+    ("evi", "EMISSIONS REPORTING", "07", "DNV Emissions Validation",
+     "Read-only validation and investigation of DNV emissions reporting. Original files are never changed.",
+     "Open Emissions Validation", "Emissions Validation"),
 )
 TITLES = {key: title for key, _e, _n, title, *_ in WORKSPACES}
 OPEN_METHOD = {"vessel": "open_project", "oil": "open_lub_oil", "voyage": "open_voyage_summary",
-               "gc": "open_gc_manager", "cjc": "open_critical_jobs", "sir": "open_inspection_reports"}
+               "gc": "open_gc_manager", "cjc": "open_critical_jobs", "sir": "open_inspection_reports",
+               "evi": "open_emissions_validation"}
 BUTTON_ATTR = {"vessel": "launch_button", "oil": "oil_button", "voyage": "voyage_button", "gc": "gc_button",
-               "cjc": "cjc_button", "sir": "sir_button"}
+               "cjc": "cjc_button", "sir": "sir_button", "evi": "evi_button"}
 PROCESS_ATTR = {"vessel": "project_process", "oil": "lub_process", "voyage": "voyage_process",
-                "gc": "gc_process", "cjc": "cjc_process", "sir": "sir_process"}
+                "gc": "gc_process", "cjc": "cjc_process", "sir": "sir_process", "evi": "evi_process"}
+WEB_WORKSPACES = ("sir", "evi")  # served by a local web server; the card button stays usable while running
 
 SIR_LOG = PROJECT_ROOT / "diagnostics" / "superintendent_inspection_server.log"
+EVI_LOG = PROJECT_ROOT / "diagnostics" / "emissions_validation_server.log"
+
+
+def _requires(key):
+    """Open a workspace only when the signed-in person may use it (checked on every path: card, review, keyboard)."""
+    def wrap(method):
+        @functools.wraps(method)
+        def inner(self, *args, **kwargs):
+            if not self._may_open(key):
+                return None
+            return method(self, *args, **kwargs)
+        return inner
+    return wrap
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
 class AutomationSuite(ctk.CTk):
 
-    def __init__(self):
+    def __init__(self, access=None):
         super().__init__()
         self.title("NeraVeda")
         self._fit_to_screen()
         self.minsize(980, 600)
         self.configure(fg_color=BG)
+        # Sign-in and rights (suite_services.access). Tests pass a FakeAccess; local mode keeps the old behaviour.
+        self.access = access if access is not None else AccessService.from_config()
+        self._allowed = []
+        self._signin_events = queue.Queue()
+        self._access_events = queue.Queue()
+        self.signin_panel = None
+        self.sir_target = self.evi_target = "/"
+        self.sir_port = self.evi_port = None
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.project_process = None
         self.lub_process     = None
@@ -163,6 +193,10 @@ class AutomationSuite(ctk.CTk):
         self.sir_mode        = None
         self.sir_url         = None
         self.sir_events      = queue.Queue()
+        self.evi_process     = None
+        self.evi_mode        = None
+        self.evi_url         = None
+        self.evi_events      = queue.Queue()
         self.intel           = None   # None while the first load is running
         self.intel_events    = queue.Queue()
         self._intel_busy     = False
@@ -175,7 +209,84 @@ class AutomationSuite(ctk.CTk):
         self.attention_limit = 4
         self.attention_rows  = []
         self.tiles           = {}
+        self._nav_rows       = {}
+        self._dashboard_built = False
 
+        if self.access.cached() is not None:
+            self._build_dashboard()
+        else:
+            self._show_signin()
+
+    # ── Sign-in ───────────────────────────────────────────────────────────────
+
+    def _show_signin(self):
+        from suite_services.access.ui import SignInPanel
+        self.signin_panel = SignInPanel(self, on_sign_in=self._sign_in_interactive, on_code=self._sign_in_with_code,
+                                        on_close=self.destroy, needs_setup=bool(getattr(self.access, "needs_setup", False)))
+        self.signin_panel.pack(fill="both", expand=True)
+        if not getattr(self.access, "needs_setup", False):
+            self._run_signin(self.access.try_silent, "Checking for a signed-in Microsoft account…", silent=True)
+
+    def _window_handle(self):
+        try:
+            import ctypes
+            return ctypes.windll.user32.GetAncestor(self.winfo_id(), 2) or None
+        except Exception:
+            return None
+
+    def _sign_in_interactive(self):
+        handle = self._window_handle()
+        self._run_signin(lambda: self.access.sign_in(handle), "Complete the sign-in in the Microsoft window or browser…")
+
+    def _sign_in_with_code(self):
+        self._run_signin(lambda: self.access.sign_in_with_code(lambda message: self._signin_events.put(("code", message))),
+                         "Getting a sign-in code…")
+
+    def _run_signin(self, fn, text, silent=False):
+        self.signin_panel.busy(text)
+
+        def work():
+            try:
+                self._signin_events.put(("done", fn(), silent))
+            except AccessDenied as error:
+                self._signin_events.put(("denied", error, silent))
+            except Exception as error:
+                self._signin_events.put(("failed", error, silent))
+        threading.Thread(target=work, daemon=True).start()
+        self.after(200, self._poll_signin)
+
+    def _poll_signin(self):
+        try:
+            event = self._signin_events.get_nowait()
+        except queue.Empty:
+            self.after(200, self._poll_signin)
+            return
+        except tk.TclError:
+            return
+        kind, value = event[0], event[1]
+        if kind == "code":
+            self.signin_panel.show_code(value)
+            self.after(200, self._poll_signin)
+        elif kind == "done" and value is not None:
+            self.signin_panel.destroy()
+            self.signin_panel = None
+            self._build_dashboard()
+        elif kind == "done":
+            self.signin_panel.ready("")  # no cached Microsoft account: wait for the person to sign in
+        elif kind == "denied":
+            self.signin_panel.ready()
+            self.signin_panel.error("No access to NeraVeda", str(value), getattr(value, "email", None))
+        elif event[2]:
+            self.signin_panel.ready("")  # a failed silent attempt is not an error worth showing
+        else:
+            self.signin_panel.ready()
+            self.signin_panel.error("Sign-in did not complete", str(value))
+
+    # ── Home screen ──────────────────────────────────────────────────────────
+
+    def _build_dashboard(self):
+        self._dashboard_built = True
+        self._allowed = [key for key in home_intelligence.ORDER if self.access.allows(key)]
         sidebar = ctk.CTkFrame(self, width=SIDEBAR_WIDTH, fg_color=NAVY, corner_radius=0)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
@@ -206,9 +317,9 @@ class AutomationSuite(ctk.CTk):
         self._layout(self._logical_width())
         self.bind("<Configure>", self._on_resize, add="+")
         self.scroll_router.attach(page)
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.render_intelligence()
         self.refresh_intelligence(fetch_sir=True)
+        self._schedule_access_refresh()
 
     def _fit_to_screen(self):
         """1240x800 where it fits; otherwise the available screen, so nothing sits under the taskbar."""
@@ -236,10 +347,52 @@ class AutomationSuite(ctk.CTk):
         self.subtitle = self._txt(
             bar,
             "One connected view of vessel reporting, technical performance, voyage operations, claims, "
-            "inspections and compliance.",
+            "inspections, compliance and emissions reporting.",
             12, MUTED, justify="left", wraplength=900,
         )
         self.subtitle.grid(row=2, column=0, sticky="w", padx=36, pady=(4, 12))
+
+        # Who is signed in, and what they can do here
+        self.user_box = ctk.CTkFrame(bar, fg_color="transparent")
+        self.user_box.grid(row=0, column=1, rowspan=3, sticky="ne", padx=(12, 36), pady=(16, 0))
+        self.user_name = self._txt(self.user_box, "", 12, INK, True, justify="right")
+        self.user_name.pack(anchor="e")
+        self.user_note = self._txt(self.user_box, "", 10, MUTED, justify="right")
+        self.user_note.pack(anchor="e", pady=(2, 0))
+        actions = ctk.CTkFrame(self.user_box, fg_color="transparent")
+        actions.pack(anchor="e", pady=(6, 0))
+        self.admin_button = ctk.CTkButton(
+            actions, text="Admin", command=self.open_admin, width=74, height=28, corner_radius=8, fg_color=IDLE_BG,
+            hover_color=SEP, text_color=BTN, border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"))
+        self.sign_out_button = ctk.CTkButton(
+            actions, text="Sign out", command=self.sign_out, width=82, height=28, corner_radius=8, fg_color=IDLE_BG,
+            hover_color=SEP, text_color=INK, border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"))
+        self._focusable(self.admin_button)
+        self._focusable(self.sign_out_button)
+        self._update_user_box()
+
+    def _update_user_box(self):
+        access = self.access
+        if getattr(access, "local_mode", False):
+            self.user_name.configure(text=access.user_label)
+            self.user_note.configure(text="Sign-in not set up · all workspaces (local mode)")
+            self.admin_button.pack_forget()
+            self.sign_out_button.pack_forget()
+            return
+        self.user_name.configure(text=access.user_label)
+        note = "Admin" if access.is_admin else ""
+        if access.offline:
+            when = ""
+            session = getattr(access, "session", None)
+            if session is not None:
+                when = f" (last checked {datetime.fromtimestamp(session.verified_at):%d %b %H:%M})"
+            note = "Offline: working from your last checked rights" + when
+        self.user_note.configure(text=note)
+        self.admin_button.pack_forget()
+        self.sign_out_button.pack_forget()
+        if access.can_administer:
+            self.admin_button.pack(side="left", padx=(0, 6))
+        self.sign_out_button.pack(side="left")
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
@@ -258,8 +411,11 @@ class AutomationSuite(ctk.CTk):
         ctk.CTkFrame(sidebar, height=1, fg_color=NAV_HV).pack(fill="x", padx=20, pady=(16, 10))
         self._nav_item(sidebar, None, "Home", self.scroll_home, active=True)
         self._txt(sidebar, "WORKSPACES", 10, NAV_MUTE, True).pack(anchor="w", padx=26, pady=(12, 6))
-        for (key, *_rest, nav_name), card in zip(WORKSPACES, self._cards):
-            self._nav_item(sidebar, key, nav_name, lambda c=card: self._scroll_to(c))
+        for key, *_rest, nav_name in WORKSPACES:
+            if key not in self._allowed:
+                continue  # workspaces this person may not use are not shown at all
+            card = self._card_by_key[key]
+            self._nav_rows[key] = self._nav_item(sidebar, key, nav_name, lambda c=card: self._scroll_to(c))
 
         ctk.CTkFrame(sidebar, fg_color="transparent").pack(fill="both", expand=True)
         ctk.CTkFrame(sidebar, height=1, fg_color=NAV_HV).pack(fill="x", padx=20, pady=(0, 12))
@@ -302,6 +458,7 @@ class AutomationSuite(ctk.CTk):
         tk.Frame.bind(row, "<FocusOut>", lambda _: row.configure(border_width=0), "+")
         tk.Frame.bind(row, "<Return>", _clk, "+")
         tk.Frame.bind(row, "<space>", _clk, "+")
+        return row
 
     def scroll_home(self):
         try:
@@ -407,7 +564,7 @@ class AutomationSuite(ctk.CTk):
             return
         shown, hidden = home_intelligence.top_attention(self.intel, self.attention_limit)
         if not shown:
-            unread = [home_intelligence.NAMES[k] for k in home_intelligence.ORDER
+            unread = [home_intelligence.NAMES[k] for k in self._allowed
                       if self.intel[k].state in ("not_connected", "none", "error", "failed")]
             text = "No attention item in the saved results NeraVeda can read."
             if unread:
@@ -476,8 +633,13 @@ class AutomationSuite(ctk.CTk):
 
     def review(self, item):
         """Open the workspace that produced an attention item."""
+        if not self._may_open(item.workspace):
+            return
         if item.workspace == "sir":
             self.open_inspection_reports(item.target)
+            return
+        if item.workspace == "evi":
+            self.open_emissions_validation(item.target)
             return
         process = getattr(self, PROCESS_ATTR[item.workspace])
         if process is not None and process.poll() is None:
@@ -502,14 +664,25 @@ class AutomationSuite(ctk.CTk):
         self._gc_card, self.gc_button = cards["gc"]
         self._cjc_card, self.cjc_button = cards["cjc"]
         self._sir_card, self.sir_button = cards["sir"]
+        self._evi_card, self.evi_button = cards["evi"]
         self._cards = [self._vessel_card, self._oil_card, self._voyage_card, self._gc_card, self._cjc_card,
-                       self._sir_card]
+                       self._sir_card, self._evi_card]
+        self._card_by_key = {key: card for key, (card, _button) in cards.items()}
+        self.no_workspace_note = self._txt(
+            self.grid_host, "No workspace is assigned to you yet. Ask your NeraVeda admin to add the workspaces you need.",
+            12, MUTED, justify="left")
         self.sir_stop_button = ctk.CTkButton(
             self._sir_card.foot, text="Stop server", command=self.stop_inspection_reports, width=104, height=34,
             corner_radius=9, fg_color=IDLE_BG, hover_color=SEP, text_color=INK, border_color=FOCUS_RING,
             font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
         )
         self._focusable(self.sir_stop_button, page_widget=True)
+        self.evi_stop_button = ctk.CTkButton(
+            self._evi_card.foot, text="Stop server", command=self.stop_emissions_validation, width=104, height=34,
+            corner_radius=9, fg_color=IDLE_BG, hover_color=SEP, text_color=INK, border_color=FOCUS_RING,
+            font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+        )
+        self._focusable(self.evi_stop_button, page_widget=True)
 
     def _workspace_card(self, key, eyebrow, number, title, description, button_text):
         m = _MOD[key]
@@ -564,12 +737,17 @@ class AutomationSuite(ctk.CTk):
         self.content_width = content
         columns = 3 if content >= 900 else 2 if content >= 560 else 1
         tile_columns = 3 if content >= 640 else 2 if content >= 440 else 1
+        visible_cards = [self._card_by_key[key] for key in self._allowed]
         if columns != self.columns:
             self.columns = columns
-            self._grid(self.grid_host, self._cards, columns, gap=14)
+            self._grid(self.grid_host, visible_cards, columns, gap=14)
+            if visible_cards:
+                self.no_workspace_note.grid_forget()
+            else:
+                self.no_workspace_note.grid(row=0, column=0, columnspan=3, sticky="w", pady=(4, 8))
         if tile_columns != self.tile_columns:
             self.tile_columns = tile_columns
-            self._grid(self.tile_host, [t["frame"] for t in self.tiles.values()], tile_columns, gap=10)
+            self._grid(self.tile_host, [self.tiles[key]["frame"] for key in self._allowed], tile_columns, gap=10)
         card_text = (content - 14 * (columns - 1)) // columns - 40
         tile_text = (content - 10 * (tile_columns - 1)) // tile_columns - 32
         for card in self._cards:
@@ -627,18 +805,30 @@ class AutomationSuite(ctk.CTk):
         self._intel_busy = True
         self.reload_button.configure(state="disabled", text="Reloading…")
 
+        allowed = self.access.allows
+
         def work():
-            note = None
+            note = evi_note = None
             if fetch_sir:
-                try:
-                    port = inspection_server.server_port()
-                    if inspection_server.probe(port) == "sir":
-                        home_intelligence.fetch_inspection_summary(port)
-                except Exception as error:
-                    note = f"Latest summary fetch failed ({type(error).__name__}); showing the previous summary"
-            result = home_intelligence.load_all()
+                if allowed("sir"):
+                    try:
+                        port = inspection_server.server_port()
+                        if inspection_server.probe(port) == "sir":
+                            home_intelligence.fetch_inspection_summary(port, headers=self.access.service_headers("sir"))
+                    except Exception as error:
+                        note = f"Latest summary fetch failed ({type(error).__name__}); showing the previous summary"
+                if allowed("evi"):
+                    try:
+                        port = emissions_server.server_port()
+                        if emissions_server.probe(port) == "evi":
+                            home_intelligence.fetch_emissions_summary(port, headers=self.access.service_headers("evi"))
+                    except Exception as error:
+                        evi_note = f"Latest summary fetch failed ({type(error).__name__}); showing the previous summary"
+            result = home_intelligence.load_all(allowed=allowed)
             if note and result["sir"].state == "ok":
                 result["sir"].freshness = note
+            if evi_note and result["evi"].state == "ok":
+                result["evi"].freshness = evi_note
             self.intel_events.put(result)
 
         threading.Thread(target=work, daemon=True).start()
@@ -686,8 +876,8 @@ class AutomationSuite(ctk.CTk):
 
     def _set_running(self, key, running):
         self.running[key] = running
-        if key == "sir":
-            return  # the inspection button stays usable while running ("Open in browser")
+        if key in WEB_WORKSPACES:
+            return  # a web workspace's button stays usable while running ("Open in browser")
         button = getattr(self, BUTTON_ATTR[key], None)
         if button is not None:
             # An open workspace reads as "already open" (neutral), not as a dimmed primary action.
@@ -744,6 +934,7 @@ class AutomationSuite(ctk.CTk):
 
     # ── Open actions ──────────────────────────────────────────────────────────
 
+    @_requires("vessel")
     def open_project(self):
         if self.project_process is not None and self.project_process.poll() is None:
             return
@@ -756,6 +947,7 @@ class AutomationSuite(ctk.CTk):
         self._set_running("vessel", True)
         self.after(1000, self.check_project_process)
 
+    @_requires("oil")
     def open_lub_oil(self):
         if self.lub_process is not None and self.lub_process.poll() is None:
             return
@@ -768,6 +960,7 @@ class AutomationSuite(ctk.CTk):
         self._set_running("oil", True)
         self.after(1000, self.check_lub_process)
 
+    @_requires("voyage")
     def open_voyage_summary(self):
         if self.voyage_process is not None and self.voyage_process.poll() is None:
             return
@@ -780,6 +973,7 @@ class AutomationSuite(ctk.CTk):
         self._set_running("voyage", True)
         self.after(1000, self.check_voyage_process)
 
+    @_requires("gc")
     def open_gc_manager(self):
         if self.gc_process is not None and self.gc_process.poll() is None:
             return
@@ -792,6 +986,7 @@ class AutomationSuite(ctk.CTk):
         self._set_running("gc", True)
         self.after(1000, self.check_gc_process)
 
+    @_requires("cjc")
     def open_critical_jobs(self):
         if self.cjc_process is not None and self.cjc_process.poll() is None:
             return
@@ -846,18 +1041,50 @@ class AutomationSuite(ctk.CTk):
 
     # ── Superintendent Inspection Report (local web server) ────────────────────
 
+    # ── Web workspaces: signed entry and servers started with this launcher's secret ──
+
+    def _open_web(self, key, port, target):
+        """Open the workspace in the browser through a short-lived signed entry link (same localhost origin)."""
+        try:
+            webbrowser.open(self.access.web_entry_url(key, port, target))
+        except SessionExpired as error:
+            self._end_session(str(error))
+
+    def _adopt_or_restart(self, key, port, title, stop_listener):
+        """A server of this workspace is already listening (started outside this NeraVeda session). Use it if it
+        accepts this launcher's tickets; otherwise offer to restart it. True when the caller should start one."""
+        if self.access.server_accepts(key, port):
+            return False
+        if not messagebox.askokcancel(
+                f"Restart {title}",
+                f"{title} is already running from an earlier session that NeraVeda cannot sign you in to.\n\n"
+                "NeraVeda will restart it now. Inspection drafts saved in the browser and emissions sessions are kept.",
+                parent=self):
+            return None
+        if not stop_listener(port):
+            messagebox.showerror("Could not restart", f"NeraVeda could not stop the program on port {port}. "
+                                 "Close it (or restart the PC) and try again.", parent=self)
+            return None
+        return True
+
+    @_requires("sir")
     def open_inspection_reports(self, path=None):
         port = inspection_server.server_port()
-        url = inspection_server.app_url(port) + (path or inspection_server.INSPECTIONS_PATH)
+        target = "/" + (path or inspection_server.INSPECTIONS_PATH).lstrip("/")
         if self.sir_process is not None and self.sir_process.poll() is None:
             if self.sir_mode is not None:  # already serving: open another browser tab
-                webbrowser.open(url)
+                self._open_web("sir", port, target)
             return
         state = inspection_server.probe(port)
         if state == "sir":  # started earlier, outside this dashboard session
-            webbrowser.open(url)
-            self.refresh_intelligence(fetch_sir=True)
-            return
+            start = self._adopt_or_restart("sir", port, "Superintendent Inspection Report", inspection_server.stop_listener)
+            if start is None:
+                return
+            if not start:
+                self._open_web("sir", port, target)
+                self.refresh_intelligence(fetch_sir=True)
+                return
+            state = None
         if state == "other":
             messagebox.showerror(
                 "Port in use",
@@ -868,12 +1095,13 @@ class AutomationSuite(ctk.CTk):
             return
         try:
             SIR_LOG.parent.mkdir(exist_ok=True)
-            self.sir_process, mode = inspection_server.start_server(PROJECT_ROOT, port, SIR_LOG)
+            self.sir_process, mode = inspection_server.start_server(
+                PROJECT_ROOT, port, SIR_LOG, secret=self.access.web_secret("sir", rotate=True), extra_env=self.access.db_env("sir"))
         except (OSError, inspection_server.InspectionAppError) as error:
             messagebox.showerror("Could not open Superintendent Inspection Report", str(error), parent=self)
             return
         self.sir_mode = None
-        self.sir_url = url
+        self.sir_target, self.sir_port = target, port
         self.sir_button.configure(state="disabled", text="Starting server…")
         process = self.sir_process
 
@@ -902,7 +1130,8 @@ class AutomationSuite(ctk.CTk):
         self.sir_button.configure(state="normal", text="Open in browser")
         self.sir_stop_button.pack(side="left", padx=(10, 0))
         self._set_running("sir", True)
-        webbrowser.open(self.sir_url or inspection_server.inspections_url())
+        # The entry ticket is minted now, not when the button was pressed: a first start can take minutes.
+        self._open_web("sir", self.sir_port or inspection_server.server_port(), self.sir_target)
         self.refresh_intelligence(fetch_sir=True)
         self.after(1000, self.check_sir_process)
 
@@ -917,8 +1146,8 @@ class AutomationSuite(ctk.CTk):
         # Keep the summary current before the server goes away.
         try:
             port = inspection_server.server_port()
-            if inspection_server.probe(port) == "sir":
-                home_intelligence.fetch_inspection_summary(port, timeout=5)
+            if self.access.allows("sir") and inspection_server.probe(port) == "sir":
+                home_intelligence.fetch_inspection_summary(port, timeout=5, headers=self.access.service_headers("sir"))
         except Exception:
             pass
         inspection_server.stop_server(self.sir_process)
@@ -932,16 +1161,220 @@ class AutomationSuite(ctk.CTk):
         self.sir_stop_button.pack_forget()
         self._set_running("sir", False)
 
+    # ── DNV Emissions Validation (local web server, port 3001) ──────────────────
+
+    @_requires("evi")
+    def open_emissions_validation(self, path=None):
+        port = emissions_server.server_port()
+        target = "/" + (path or "").lstrip("/")
+        if self.evi_process is not None and self.evi_process.poll() is None:
+            if self.evi_mode is not None:  # already serving: open another browser tab
+                self._open_web("evi", port, target)
+            return
+        state = emissions_server.probe(port)
+        if state == "evi":  # started earlier, outside this dashboard session
+            start = self._adopt_or_restart("evi", port, "Emissions Validation", emissions_server.stop_listener)
+            if start is None:
+                return
+            if not start:
+                self._open_web("evi", port, target)
+                self.refresh_intelligence(fetch_sir=True)
+                return
+            state = None
+        if state == "other":
+            messagebox.showerror(
+                "Port in use",
+                f"Another program is using port {port}, which Emissions Validation needs.\n\n"
+                "Close that program, or set EMISSIONS_PORT to a free port, and try again.", parent=self)
+            return
+        try:
+            EVI_LOG.parent.mkdir(exist_ok=True)
+            self.evi_process, mode = emissions_server.start_server(
+                PROJECT_ROOT, port, EVI_LOG, secret=self.access.web_secret("evi", rotate=True), extra_env=self.access.db_env("evi"))
+        except (OSError, emissions_server.InspectionAppError) as error:
+            messagebox.showerror("Could not open Emissions Validation", str(error), parent=self)
+            return
+        self.evi_mode = None
+        self.evi_target, self.evi_port = target, port
+        self.evi_button.configure(state="disabled", text="Starting server…")
+        process = self.evi_process
+
+        def wait():
+            self.evi_events.put((process, mode, emissions_server.wait_until_ready(process, port)))
+        threading.Thread(target=wait, daemon=True).start()
+        self.after(250, self.poll_evi_start)
+
+    def poll_evi_start(self):
+        try:
+            process, mode, ready = self.evi_events.get_nowait()
+        except queue.Empty:
+            self.after(250, self.poll_evi_start)
+            return
+        if process is not self.evi_process:
+            return  # stopped while starting
+        if not ready:
+            emissions_server.stop_server(process)
+            self.evi_process = None
+            self._reset_evi()
+            messagebox.showerror(
+                "Emissions Validation did not start",
+                f"The local server did not become ready.\n\nDetails: {EVI_LOG}", parent=self)
+            return
+        self.evi_mode = mode
+        self.evi_button.configure(state="normal", text="Open in browser")
+        self.evi_stop_button.pack(side="left", padx=(10, 0))
+        self._set_running("evi", True)
+        self._open_web("evi", self.evi_port or emissions_server.server_port(), self.evi_target)
+        self.refresh_intelligence(fetch_sir=True)
+        self.after(1000, self.check_evi_process)
+
+    def check_evi_process(self):
+        if self.evi_process is not None and self.evi_process.poll() is None:
+            self.after(1000, self.check_evi_process)
+        elif self.evi_mode is not None:
+            self.evi_process = None
+            self._reset_evi()
+
+    def stop_emissions_validation(self):
+        # Keep the Home summary current before the server goes away.
+        try:
+            port = emissions_server.server_port()
+            if self.access.allows("evi") and emissions_server.probe(port) == "evi":
+                home_intelligence.fetch_emissions_summary(port, timeout=5, headers=self.access.service_headers("evi"))
+        except Exception:
+            pass
+        emissions_server.stop_server(self.evi_process)
+        self.evi_process = None
+        self._reset_evi()
+        self.refresh_intelligence()
+
+    def _reset_evi(self):
+        self.evi_mode = None
+        self.evi_button.configure(state="normal", text="Open Emissions Validation")
+        self.evi_stop_button.pack_forget()
+        self._set_running("evi", False)
+
+    # ── Access rights while NeraVeda is open ──────────────────────────────────
+
+    def _may_open(self, key):
+        if self.access.allows(key):
+            return True
+        if not self.access.signed_in:
+            self._end_session("Your NeraVeda session has ended.")
+        else:
+            messagebox.showinfo("No access", f"You do not have access to {TITLES.get(key, key)}.\n\n"
+                                "Ask your NeraVeda admin if you need it.", parent=self)
+        return False
+
+    def _schedule_access_refresh(self):
+        if getattr(self.access, "local_mode", False):
+            return
+        session = getattr(self.access, "session", None)
+        minutes = getattr(session, "refresh_minutes", 15) or 15
+        self.after(int(minutes * 60_000), self._refresh_access)
+
+    def _refresh_access(self):
+        def work():
+            try:
+                self._access_events.put(("ok", self.access.refresh()))
+            except Exception as error:
+                self._access_events.put(("error", error))
+        threading.Thread(target=work, daemon=True).start()
+        self.after(500, self._poll_access)
+
+    def _poll_access(self):
+        try:
+            kind, value = self._access_events.get_nowait()
+        except queue.Empty:
+            self.after(500, self._poll_access)
+            return
+        except tk.TclError:
+            return
+        if kind == "error":
+            self._end_session(str(value) if isinstance(value, (AccessDenied, SessionExpired))
+                              else f"NeraVeda could not check your access: {value}")
+            return
+        self._apply_access()
+        self._schedule_access_refresh()
+
+    def _apply_access(self):
+        """Apply changed rights: removed workspaces disappear now; added ones appear after a restart."""
+        allowed = [key for key in home_intelligence.ORDER if self.access.allows(key)]
+        removed = [key for key in self._allowed if key not in allowed]
+        added = [key for key in allowed if key not in self._allowed]
+        for key in removed:
+            self._card_by_key[key].grid_forget()
+            self.tiles[key]["frame"].grid_forget()
+            row = self._nav_rows.pop(key, None)
+            if row is not None:
+                row.pack_forget()
+            if key in WEB_WORKSPACES:
+                port = inspection_server.server_port() if key == "sir" else emissions_server.server_port()
+                self.access.revoke_web(key, port)  # open browser tabs lose their session
+        self._allowed = [key for key in self._allowed if key in allowed]
+        if removed:
+            self.columns = self.tile_columns = None
+            self._layout(self._logical_width())
+            self.refresh_intelligence()
+        self._update_user_box()
+        if added:
+            self.user_note.configure(text="New workspaces were added for you: restart NeraVeda to see them.")
+
+    def _stop_servers(self):
+        for key, process, server in (("sir", self.sir_process, inspection_server), ("evi", self.evi_process, emissions_server)):
+            if process is not None and process.poll() is None:
+                try:
+                    self.access.revoke_web(key, server.server_port())
+                except Exception:
+                    pass
+                server.stop_server(process)
+        self.sir_process = self.evi_process = None
+
+    def _end_session(self, message):
+        """Rights withdrawn or the session ended: stop the web servers and close (reopen to sign in)."""
+        try:
+            messagebox.showwarning("NeraVeda", f"{message}\n\nNeraVeda will close. Open it again to sign in.", parent=self)
+        except tk.TclError:
+            pass
+        self._stop_servers()
+        self.destroy()
+
+    def sign_out(self):
+        servers = [process for process in (self.sir_process, self.evi_process) if process is not None and process.poll() is None]
+        text = "Sign out of NeraVeda?"
+        if servers:
+            text += "\n\nThe Inspection Reports / Emissions Validation servers are stopped. Workspace windows that are already open stay open until you close them."
+        if not messagebox.askokcancel("Sign out", text, parent=self):
+            return
+        self._stop_servers()
+        try:
+            self.access.sign_out()
+        finally:
+            self.destroy()
+
+    def open_admin(self):
+        if not self.access.can_administer:
+            return
+        try:
+            from suite_services.access.ui import AdminWindow
+            AdminWindow(self, self.access)
+        except Exception as error:
+            messagebox.showerror("Admin", f"The people list could not be opened:\n{error}", parent=self)
+
     def on_close(self):
-        if self.sir_process is not None and self.sir_process.poll() is None:
+        servers = [name for name, process in (("Superintendent Inspection Report", self.sir_process),
+                                               ("Emissions Validation", self.evi_process))
+                   if process is not None and process.poll() is None]
+        if servers:
             if not messagebox.askokcancel(
                     "Close NeraVeda",
-                    "Closing NeraVeda stops the Superintendent Inspection Report server.\n\n"
-                    "Work typed in the browser stays saved on this device and syncs the next time the app is open.",
+                    f"Closing NeraVeda stops the {' and '.join(servers)} server{'s' if len(servers) > 1 else ''}.\n\n"
+                    "Inspection drafts stay saved in the browser; emissions sessions and findings stay in their database.",
                     parent=self):
                 return
             inspection_server.stop_server(self.sir_process)
-            self.sir_process = None
+            emissions_server.stop_server(self.evi_process)
+            self.sir_process = self.evi_process = None
         self.destroy()
 
     def open_project_folder(self):

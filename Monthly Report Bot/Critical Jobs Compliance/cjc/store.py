@@ -1,12 +1,12 @@
 """Critical Job Compliance tables inside the shared suite database (prefix cjc_)."""
 from __future__ import annotations
 
-import getpass
 import json
 from datetime import date, datetime
 from pathlib import Path
 
 from suite_services import database
+from suite_services.actor import current_actor
 from suite_services.storage import runtime_root
 
 from .models import JobPlan, Reconciliation
@@ -58,10 +58,8 @@ def _now():
 
 
 def _actor():
-    try:
-        return getpass.getuser()
-    except Exception:
-        return "unknown"
+    """The person signed in to NeraVeda, else the Windows user."""
+    return current_actor()
 
 
 class Store:

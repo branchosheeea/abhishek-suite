@@ -11,4 +11,6 @@ for path in (str(ROOT), str(HERE)):
 from cjc.ui import main  # noqa: E402
 
 if __name__ == "__main__":
+    from suite_services.access.guard import require_module
+    require_module("cjc")
     main()

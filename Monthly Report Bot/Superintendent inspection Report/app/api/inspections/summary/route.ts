@@ -3,6 +3,7 @@ import { CONDITION_SECTIONS, createEmptyReport, overallProgress, type Report } f
 import { getDb } from "@/lib/mongodb"
 import { isFinal } from "@/lib/completeness"
 import { keyFigures } from "@/lib/condition-overview"
+import { route } from "@/lib/server/http"
 
 // Lightweight, read-only summary for the NeraVeda desktop home page.
 // Covers reports synced to the cloud database only; drafts that exist only in a browser are not visible here.
@@ -16,7 +17,8 @@ const CONDITION_ITEMS = CONDITION_SECTIONS.flatMap((section) =>
 
 export const dynamic = "force-dynamic"
 
-export async function GET() {
+// The desktop launcher reads it with a 60 s service ticket; a signed-in browser may read it too.
+export const GET = route({ mutating: false, auth: "user-or-service" }, async () => {
   try {
     const db = await getDb()
     const [docs, photoCounts, reportCount] = await Promise.all([
@@ -61,4 +63,4 @@ export async function GET() {
     console.error("[inspections:summary]", error)
     return NextResponse.json({ error: "Summary unavailable" }, { status: 500 })
   }
-}
+})

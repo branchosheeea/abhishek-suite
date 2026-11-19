@@ -33,14 +33,23 @@ This Next.js app is the **Neraveda web shell**. It hosts Neraveda's web workspac
 | `/inspections` | Inspection report list (module home) |
 | `/inspections/report?id=…` | Report editor |
 | `/report?id=…` | Old editor address: temporarily redirected (307) to `/inspections/report?id=…` |
-| `/api/reports`, `/api/reports/[id]`, `/api/reports/[id]/photos/[photoId]` | Report and photo sync API (unchanged) |
-| `/api/health` | Lets the desktop launcher recognise this server |
+| `/api/reports`, `/api/reports/[id]`, `/api/reports/[id]/photos/[photoId]` | Report and photo sync API (needs the NeraVeda session) |
+| `/api/inspections/summary` | Summary for the NeraVeda Home tile (session, or the launcher's service ticket) |
+| `/api/auth/enter`, `/api/auth/session`, `/api/auth/revoke` | NeraVeda sign-in: exchange the launcher's ticket for the session cookie, show it, end it |
+| `/api/health` | Lets the desktop launcher recognise this server (the only API route without a session) |
 
 Return paths: the sidebar (or the top bar on narrow screens) links to Home and each module, the list page has a `Neraveda › Inspection Reports` breadcrumb, and the editor's back arrow returns to `/inspections`.
 
 **Adding a module:** add an entry to `lib/modules.ts`, then create its pages under `app/(shell)/<route>/`. The sidebar and home page pick it up automatically. Keep API routes under `app/api/<module>/…`.
 
-**Storage stays where it was:** browser IndexedDB stores `sir-reports` / `sir-photos` for the `http://localhost:3000` origin, plus MongoDB database `inspections` (collections `reports`, `photos`). The route move changed no data, so no migration is needed. The service worker cache was renamed to `neraveda-shell-v3`; the old `sir-shell-v2` cache is removed automatically. There is no sign-in yet; the server only listens on `127.0.0.1`.
+**Storage stays where it was:** browser IndexedDB stores `sir-reports` / `sir-photos` for the `http://localhost:3000` origin, plus MongoDB database `inspections` (collections `reports`, `photos`). The route move changed no data, so no migration is needed. The service worker cache was renamed to `neraveda-shell-v3`; the old `sir-shell-v2` cache is removed automatically.
+
+**Sign-in:** people sign in to NeraVeda with their Microsoft work account, and the server only listens on `127.0.0.1`.
+- Every API route except health needs the session NeraVeda opens the browser with: an HttpOnly `neraveda_sir` cookie, valid 12 h, for people who have this workspace.
+- Without it, the app shows "Open from NeraVeda". Drafts already in the browser stay there, and a failed load never creates an empty draft over a report.
+- Without network, the app shows an offline banner and keeps working on browser drafts.
+- Reports do not record yet which person saved them; the signed-in person is available to the API (`currentUser()`) for that.
+- See `docs/NERAVEDA_ACCESS.md` in `Monthly Report Bot`.
 
 ## Project structure
 
@@ -79,7 +88,9 @@ public/
 
 ## Opening from Neraveda
 
-This app is **Workspace 06** of the Neraveda automation suite (`Monthly Report Bot/abhishek_automation_suite.py`). Choose **Open Inspection Reports** on the dashboard: it starts this server on `http://localhost:3000` (no console window) and opens `/inspections` in the browser. It uses the production build when it is up to date and falls back to `next dev` otherwise, so after changing code run `npm run build` for faster start-up. Keep port 3000, because drafts saved in the browser belong to that address. The manual steps below still work on their own.
+This app is **Workspace 06** of the Neraveda automation suite (`Monthly Report Bot/abhishek_automation_suite.py`). Choose **Open Inspection Reports** on the dashboard: it starts this server on `http://localhost:3000` (no console window) and opens `/inspections` in the browser. It uses the production build when it is up to date and falls back to `next dev` otherwise, so after changing code run `npm run build` for faster start-up. Keep port 3000, because drafts saved in the browser belong to that address.
+
+The manual steps below still build and start the app, but a server started by hand has no NeraVeda secret. Its pages load, every API request answers 503, and the app shows "Open from NeraVeda". Start it from NeraVeda for real use. NeraVeda passes the secret and, after `python -m suite_services.access secrets import`, `MONGODB_URI` to the server in its environment.
 
 ## Prerequisites
 

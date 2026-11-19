@@ -6,12 +6,22 @@ import { usePathname } from "next/navigation"
 import type { ReactNode } from "react"
 import { WEB_MODULES, moduleForPath, type WebModule } from "@/lib/modules"
 import { cn } from "@/lib/utils"
+import { SessionGate, useNeraVedaUser } from "./session-gate"
 
 // Mirrors the NeraVeda desktop dashboard: navy sidebar, brand mark, workspace list, tagline.
 export function AppShell({ children }: { children: ReactNode }) {
+  return (
+    <SessionGate>
+      <Shell>{children}</Shell>
+    </SessionGate>
+  )
+}
+
+function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const current = moduleForPath(pathname)
   const onHome = pathname === "/"
+  const user = useNeraVedaUser()
 
   return (
     <div className="flex min-h-dvh flex-col xl:flex-row">
@@ -32,6 +42,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="flex-1" />
+        {user && (
+          <p className="mx-5 mb-3 text-xs leading-snug" title={user.sub}>
+            <span className="text-shell-muted">Signed in</span>
+            <br />
+            <span className="font-semibold text-white">{user.name || user.sub}</span>
+          </p>
+        )}
         <div className="mx-5 h-px bg-shell-hover" />
         <p className="px-6 pt-4 text-sm leading-snug">
           Smarter Data.

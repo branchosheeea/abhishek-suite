@@ -1,0 +1,63 @@
+{
+  "_comment": "Shared by the Python launcher and both Node apps. Test secret only.",
+  "secret": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "now": 1800000000,
+  "valid": [
+    {
+      "token": "nv1.eyJ0eXAiOiJlbnRlciIsImF1ZCI6ImV2aSIsInN1YiI6ImFsaWNlQGV4YW1wbGUuY29tIiwibmFtZSI6IkFsaWNlIMOFbHVuZCIsImFkbSI6ZmFsc2UsImdyYW50cyI6W3sibW9kdWxlIjoiZXZpIiwicm9sZSI6InVzZSJ9XSwiaWF0IjoxNzk5OTk5OTkwLCJleHAiOjE4MDAwMDAxMTAsImp0aSI6InYxIn0.S2gKogwouXFltq6pf6NxmQkvYrZc-R1DEaZ-IdgGTus",
+      "typ": "enter",
+      "aud": "evi",
+      "sub": "alice@example.com"
+    },
+    {
+      "token": "nv1.eyJ0eXAiOiJzZXJ2aWNlIiwiYXVkIjoic2lyIiwic3ViIjoiYm9iQGV4YW1wbGUuY29tIiwibmFtZSI6IkJvYiIsImFkbSI6dHJ1ZSwiZ3JhbnRzIjpbeyJtb2R1bGUiOiJzaXIiLCJyb2xlIjoidXNlIn1dLCJpYXQiOjE4MDAwMDAwMDAsImV4cCI6MTgwMDAwMDA2MCwianRpIjoidjIifQ.tdGBJmJY5vDPmfSV_tBQOulcVh1Z5DTpvcIXzM2xdnM",
+      "typ": "service",
+      "aud": "sir",
+      "sub": "bob@example.com"
+    }
+  ],
+  "invalid": [
+    {
+      "token": "nv1.eyJ0eXAiOiJlbnRlciIsImF1ZCI6ImV2aSIsInN1YiI6ImFsaWNlQGV4YW1wbGUuY29tIiwibmFtZSI6IiIsImFkbSI6ZmFsc2UsImdyYW50cyI6W10sImlhdCI6MTc5OTk5OTUwMCwiZXhwIjoxNzk5OTk5NjIwLCJqdGkiOiJ2MyJ9.ETnwGa1OWgEiAlNXNXNsZr3tBZdY9eiZA97YFSc-KgU",
+      "typ": "enter",
+      "aud": "evi",
+      "why": "expired"
+    },
+    {
+      "token": "nv1.eyJ0eXAiOiJlbnRlciIsImF1ZCI6ImV2aSIsInN1YiI6ImFsaWNlQGV4YW1wbGUuY29tIiwibmFtZSI6IkFsaWNlIMOFbHVuZCIsImFkbSI6ZmFsc2UsImdyYW50cyI6W3sibW9kdWxlIjoiZXZpIiwicm9sZSI6InVzZSJ9XSwiaWF0IjoxNzk5OTk5OTkwLCJleHAiOjE4MDAwMDAxMTAsImp0aSI6InYxIn0.S2gKogwouXFltq6pf6NxmQkvYrZc-R1DEaZ-IdgGTus",
+      "typ": "enter",
+      "aud": "sir",
+      "why": "wrong audience"
+    },
+    {
+      "token": "nv1.eyJ0eXAiOiJlbnRlciIsImF1ZCI6ImV2aSIsInN1YiI6ImFsaWNlQGV4YW1wbGUuY29tIiwibmFtZSI6IkFsaWNlIMOFbHVuZCIsImFkbSI6ZmFsc2UsImdyYW50cyI6W3sibW9kdWxlIjoiZXZpIiwicm9sZSI6InVzZSJ9XSwiaWF0IjoxNzk5OTk5OTkwLCJleHAiOjE4MDAwMDAxMTAsImp0aSI6InYxIn0.S2gKogwouXFltq6pf6NxmQkvYrZc-R1DEaZ-IdgGTus",
+      "typ": "service",
+      "aud": "evi",
+      "why": "wrong type"
+    },
+    {
+      "token": "nv1.eyJ0eXAiOiJlbnRlciIsImF1ZCI6ImV2aSIsInN1YiI6ImFsaWNlQGV4YW1wbGUuY29tIiwibmFtZSI6IiIsImFkbSI6ZmFsc2UsImdyYW50cyI6W10sImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMTIwLCJqdGkiOiJ2NCJ9.l1C-jmh7XHg09soXgfdNzDeGwTse3HJe21LpLW7PmY8",
+      "typ": "enter",
+      "aud": "evi",
+      "why": "signed with another secret"
+    },
+    {
+      "token": "nv1.eyJ0eXAiOiJlbnRlciIsImF1ZCI6ImV2aSIsInN1YiI6ImJvc3NAZXhhbXBsZS5jb20iLCJuYW1lIjoiQWxpY2UgXHUwMGM1bHVuZCIsImFkbSI6ZmFsc2UsImdyYW50cyI6W3sibW9kdWxlIjoiZXZpIiwicm9sZSI6InVzZSJ9XSwiaWF0IjoxNzk5OTk5OTkwLCJleHAiOjE4MDAwMDAxMTAsImp0aSI6InYxIn0.S2gKogwouXFltq6pf6NxmQkvYrZc-R1DEaZ-IdgGTus",
+      "typ": "enter",
+      "aud": "evi",
+      "why": "payload changed after signing"
+    },
+    {
+      "token": "nv1.e30",
+      "typ": "enter",
+      "aud": "evi",
+      "why": "malformed"
+    },
+    {
+      "token": "nv2.eyJ0eXAiOiJlbnRlciIsImF1ZCI6ImV2aSIsInN1YiI6ImFsaWNlQGV4YW1wbGUuY29tIiwibmFtZSI6IkFsaWNlIMOFbHVuZCIsImFkbSI6ZmFsc2UsImdyYW50cyI6W3sibW9kdWxlIjoiZXZpIiwicm9sZSI6InVzZSJ9XSwiaWF0IjoxNzk5OTk5OTkwLCJleHAiOjE4MDAwMDAxMTAsImp0aSI6InYxIn0.S2gKogwouXFltq6pf6NxmQkvYrZc-R1DEaZ-IdgGTus",
+      "typ": "enter",
+      "aud": "evi",
+      "why": "unknown version"
+    }
+  ]
+}

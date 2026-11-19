@@ -4,16 +4,19 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import useSWR from "swr"
 import { createEmptyReport, type Photo, type Report } from "@/lib/form-schema"
 import { deletePhotoLocal, getReport, listPhotos, newId, putPhoto, putReport } from "@/lib/local-db"
+import { apiFetch } from "@/lib/api"
 import { syncReport } from "@/lib/sync"
 
 export type SaveState = "idle" | "saving" | "saved" | "synced" | "sync-error"
 
 // A report that is not on this device yet (opened from a link or bookmark) is fetched from the cloud first.
 // Creating an empty draft instead would carry a newer timestamp and overwrite the cloud copy on the next sync.
-async function fetchFromCloud(id: string) {
+async function fetchFromCloud(id: string): Promise<Report | null | "locked"> {
   if (!navigator.onLine) return null
   try {
-    const res = await fetch(`/api/reports/${id}`, { cache: "no-store" })
+    const res = await apiFetch(`/api/reports/${id}`, { cache: "no-store" })
+    // Not signed in to NeraVeda: never fall back to an empty draft, which would overwrite the cloud copy later.
+    if (res.status === 401 || res.status === 403 || res.status === 503) return "locked"
     if (!res.ok) return null
     const { report, photos } = (await res.json()) as { report: Report; photos: Photo[] }
     const local: Report = { ...createEmptyReport(id), ...report, deletedPhotoIds: [], syncedAt: report.updatedAt }
@@ -26,7 +29,10 @@ async function fetchFromCloud(id: string) {
 }
 
 async function loadOrCreate(id: string) {
-  const existing = (await getReport(id)) ?? (await fetchFromCloud(id))
+  const local = await getReport(id)
+  const cloud = local ? null : await fetchFromCloud(id)
+  if (cloud === "locked") throw new Error("Open Inspection Reports from NeraVeda to load this report.")
+  const existing = local ?? cloud
   const report = existing ?? createEmptyReport(id)
   if (!existing) await putReport(report)
   const photos = await listPhotos(id)

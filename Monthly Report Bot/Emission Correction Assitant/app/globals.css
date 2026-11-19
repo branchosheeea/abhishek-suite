@@ -1,0 +1,150 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  /* Same type as the NeraVeda desktop app and web shell (Segoe UI); no web-font download. */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --color-shell: var(--shell);
+  --color-shell-foreground: var(--shell-foreground);
+  --color-shell-hover: var(--shell-hover);
+  --color-shell-muted: var(--shell-muted);
+  --color-success: var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-warning: var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-critical: var(--critical);
+  --color-critical-bg: var(--critical-bg);
+  --color-info-bg: var(--info-bg);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
+}
+
+/* Light theme = the NeraVeda desktop palette (abhishek_automation_suite.py colour tokens). */
+:root {
+  color-scheme: light;
+  --background: #f3f6f9;
+  --foreground: #0f1b2a;
+  --card: #ffffff;
+  --primary: #1557a0;
+  --primary-foreground: #ffffff;
+  --muted: #eef1f4;
+  --muted-foreground: #5f6b7a;
+  --accent: #e9f1ec;
+  --accent-foreground: #2f6b4f;
+  --success: #1e7a45;
+  --success-bg: #e3f4ea;
+  --warning: #6e4500;
+  --warning-bg: #fff1d6;
+  --critical: #8f2414;
+  --critical-bg: #fbe9e6;
+  --info-bg: #e6effc;
+  --border: #e3e8ee;
+  --input: #d5dce4;
+  --ring: #1557a0;
+  --shell: #0e2a47;
+  --shell-foreground: #d3dfeb;
+  --shell-hover: #173a5e;
+  --shell-muted: #8fa6be;
+  /* Chart (emphasis form), validated against the card surface: accent vs muted gray. */
+  --chart-accent: #2a78d6;
+  --chart-muted: #898781;
+  --chart-grid: #e1e0d9;
+  --chart-axis: #c3c2b7;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #111a26;
+  --foreground: #e8edf3;
+  --card: #1b2331;
+  --primary: #6ea8ec;
+  --primary-foreground: #0b1726;
+  --muted: #243042;
+  --muted-foreground: #a7b3c2;
+  --accent: #1f3a2f;
+  --accent-foreground: #9bd3b5;
+  --success: #6fd39a;
+  --success-bg: #173a29;
+  --warning: #f2c46a;
+  --warning-bg: #3d2f12;
+  --critical: #f29a8a;
+  --critical-bg: #45201a;
+  --info-bg: #1d3150;
+  --border: #2c3a4f;
+  --input: #34445c;
+  --ring: #6ea8ec;
+  --shell: #0b1f35;
+  --shell-foreground: #d3dfeb;
+  --shell-hover: #173a5e;
+  --shell-muted: #8fa6be;
+  --chart-accent: #3987e5;
+  --chart-muted: #8a8984;
+  --chart-grid: #2c3a4f;
+  --chart-axis: #4a5a70;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    color-scheme: dark;
+    --background: #111a26;
+    --foreground: #e8edf3;
+    --card: #1b2331;
+    --primary: #6ea8ec;
+    --primary-foreground: #0b1726;
+    --muted: #243042;
+    --muted-foreground: #a7b3c2;
+    --accent: #1f3a2f;
+    --accent-foreground: #9bd3b5;
+    --success: #6fd39a;
+    --success-bg: #173a29;
+    --warning: #f2c46a;
+    --warning-bg: #3d2f12;
+    --critical: #f29a8a;
+    --critical-bg: #45201a;
+    --info-bg: #1d3150;
+    --border: #2c3a4f;
+    --input: #34445c;
+    --ring: #6ea8ec;
+    --shell: #0b1f35;
+    --chart-accent: #3987e5;
+    --chart-muted: #8a8984;
+    --chart-grid: #2c3a4f;
+    --chart-axis: #4a5a70;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+  select option,
+  select optgroup {
+    background-color: var(--card);
+    color: var(--foreground);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@media print {
+  aside, nav, .no-print { display: none !important; }
+}

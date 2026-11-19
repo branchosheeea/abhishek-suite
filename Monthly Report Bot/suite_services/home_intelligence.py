@@ -8,6 +8,8 @@ the shared database is opened read-only. Exceptions come from each workspace's o
 - Guarantee Claims: gc_manager.attention.calculate_attention on the saved claim register.
 - Critical Jobs: saved extraction runs (cjc_runs). Compliance assessments are not saved yet.
 - Inspection Reports: a summary fetched from the web app's /api/inspections/summary and cached on disk.
+- Emissions Validation: a summary fetched from its web app's /api/summary (latest completed run per session)
+  and cached on disk. DNV items are counted as entered; nothing is presented as confirmed by Home.
 - Vessel Report Centre and Voyage Summary save no results the home page can read.
 
 Missing data is never reported as zero or "all clear". Each workspace is loaded independently, so one failure
@@ -27,10 +29,11 @@ from pathlib import Path
 
 from suite_services.storage import runtime_root
 
-ORDER = ("vessel", "oil", "voyage", "gc", "cjc", "sir")
+ORDER = ("vessel", "oil", "voyage", "gc", "cjc", "sir", "evi")
 NAMES = {
     "vessel": "Vessel Report Centre", "oil": "Lub Oil Review", "voyage": "Voyage Summary",
     "gc": "Guarantee Claims", "cjc": "Critical Jobs", "sir": "Superintendent Inspection",
+    "evi": "Emissions Validation",
 }
 ACTION, REVIEW = "action", "review"
 SEVERITY_LABEL = {ACTION: "Action required", REVIEW: "Review required"}
@@ -361,9 +364,11 @@ def sir_cache_path(root=None):
     return Path(root or runtime_root()) / "home" / "inspections_summary.json"
 
 
-def fetch_inspection_summary(port, root=None, timeout=15):
-    """Read the web app's summary while its server is running and cache it with the fetch time."""
-    with urllib.request.urlopen(f"http://localhost:{port}/api/inspections/summary", timeout=timeout) as response:
+def fetch_inspection_summary(port, root=None, timeout=15, headers=None):
+    """Read the web app's summary while its server is running and cache it with the fetch time.
+    headers carries the launcher's short-lived service ticket (the app refuses unauthenticated requests)."""
+    request = urllib.request.Request(f"http://localhost:{port}/api/inspections/summary", headers=headers or {})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         summary = json.loads(response.read().decode("utf-8"))
     if not isinstance(summary.get("reports"), list):
         raise ValueError("Unexpected inspection summary format.")
@@ -422,19 +427,94 @@ def sir_intel(root=None, today=None):
                  updated=f"{rated} · report saved {fmt_day(latest.get('updatedAt'), today)}", attention=items)
 
 
+# ── DNV Emissions Validation (web app summary, cached) ────────────────────────
+
+def evi_cache_path(root=None):
+    return Path(root or runtime_root()) / "home" / "emissions_summary.json"
+
+
+def fetch_emissions_summary(port, root=None, timeout=15, headers=None):
+    """Read the Emissions Validation summary while its server is running and cache it with the fetch time."""
+    request = urllib.request.Request(f"http://localhost:{port}/api/summary", headers=headers or {})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        summary = json.loads(response.read().decode("utf-8"))
+    if not isinstance(summary.get("sessions"), list):
+        raise ValueError("Unexpected emissions summary format.")
+    summary["fetchedAt"] = datetime.now().isoformat(timespec="seconds")
+    path = evi_cache_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp") as handle:
+        json.dump(summary, handle)
+        temporary = handle.name
+    os.replace(temporary, path)
+    return summary
+
+
+def _evi_period(session):
+    period = session.get("period") or {}
+    return f"{period.get('from')} to {period.get('to')}" if period.get("from") else "Period not set"
+
+
+def evi_intel(root=None, today=None):
+    path = evi_cache_path(root)
+    if not path.is_file():
+        return Intel("evi", "not_connected", "Summary not loaded yet", "Loads while Emissions Validation is open",
+                     outcome="Open the workspace to load its summary")
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    fetched = summary.get("fetchedAt")
+    freshness = f"Summary fetched {fmt_time(fetched, today)}"
+    if not summary.get("configured"):
+        return Intel("evi", "none", "Storage not configured", "Set EMISSIONS_MONGODB_URI for the workspace", freshness,
+                     outcome="Storage not configured")
+    sessions = summary.get("sessions") or []
+    validated = [s for s in sessions if s.get("run")]
+    if not validated:
+        return Intel("evi", "none", "Not yet validated",
+                     "No validation session has a completed run" if sessions else "No validation session yet", freshness,
+                     outcome="No completed validation run", updated=f"Summary fetched {fmt_day(fetched, today)}")
+    latest = max(validated, key=lambda s: s["run"].get("finishedAt") or "")
+    counts = latest["run"].get("summary") or {}
+    items = []
+    for s in validated:
+        c = s["run"].get("summary") or {}
+        if c.get("errors"):
+            items.append(Attention(
+                REVIEW, s.get("vessel") or "Unnamed vessel", f"{_plural(c['errors'], 'validation error')} to investigate",
+                _clip(f"{c.get('dnvReproduced', 0)} of {c.get('dnv', 0)} DNV item(s) independently reproduced; "
+                      f"{c.get('dnvUnresolved', 0)} unresolved. Findings are diagnostic, not confirmed reporting errors."),
+                "evi", _evi_period(s), f"Validated {fmt_day(s['run'].get('finishedAt'), today)}",
+                rank=(0, -(c.get("errors") or 0)), target=f"sessions/{s.get('id')}"))
+    context = (f"{_evi_period(latest)} · {_plural(counts.get('errors', 0), 'error')}, "
+               f"{_plural(counts.get('warnings', 0), 'warning')}")
+    return Intel("evi", "ok", f"Latest: {latest.get('vessel') or 'Unnamed vessel'}", context, freshness,
+                 outcome=f"{_plural(counts.get('dnv', 0), 'DNV item')}: {counts.get('dnvReproduced', 0)} reproduced, "
+                         f"{counts.get('dnvUnresolved', 0)} unresolved",
+                 updated=f"Validated {fmt_day(latest['run'].get('finishedAt'), today)} · original files never modified",
+                 attention=items)
+
+
 # ── Assembly ──────────────────────────────────────────────────────────────────
 
 PROVIDERS = {
     "vessel": vessel_report_intel, "oil": lube_intel, "voyage": voyage_intel,
-    "gc": gc_intel, "cjc": cjc_intel, "sir": sir_intel,
+    "gc": gc_intel, "cjc": cjc_intel, "sir": sir_intel, "evi": evi_intel,
 }
 
 
-def load_all(root=None, today=None, providers=None):
-    """Load every workspace independently; a failing workspace becomes an error state, never a crash."""
+def no_access(key):
+    """A workspace this person may not use: nothing of it is read or shown."""
+    return Intel(key, "no_access", "No access", outcome="No access")
+
+
+def load_all(root=None, today=None, providers=None, allowed=None):
+    """Load every workspace independently; a failing workspace becomes an error state, never a crash.
+    With allowed (a predicate on the workspace key), workspaces the person may not use are not read at all."""
     root = Path(root) if root else runtime_root()
     result = {}
     for key, provider in (providers or PROVIDERS).items():
+        if allowed is not None and not allowed(key):
+            result[key] = no_access(key)
+            continue
         try:
             result[key] = provider(root, today)
         except Exception as error:  # isolate the failure to this workspace

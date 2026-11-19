@@ -1,0 +1,21 @@
+# Vessel reporting data is confidential and never committed. Put the DHT COLT reference files here.
+/reference/
+# Expected results of the DHT COLT regression (vessel-specific; kept out of git like the files themselves)
+/tests/private/
+
+# dependencies and build output
+/node_modules
+/.next/
+/out/
+/build
+
+# env files (connection strings)
+.env*
+!.env.example
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# logs
+npm-debug.log*

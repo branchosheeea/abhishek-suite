@@ -19,7 +19,7 @@ from pathlib import Path
 
 SIR_FOLDER = "Superintendent inspection Report"
 DEFAULT_PORT = 3000
-HOST = "127.0.0.1"  # local only: the report API has no authentication
+HOST = "127.0.0.1"  # local only; every API request also needs the session NeraVeda opens it with
 HEALTH_MARKER = '"neraveda-web"'  # returned by /api/health
 LEGACY_MARKER = "SIR Inspect"  # manifest of builds from before the web shell
 INSPECTIONS_PATH = "inspections"
@@ -107,6 +107,14 @@ def cloud_sync_status(folder):
                 uri = value.strip().strip('"').strip("'")
                 break
     if not uri:
+        # Moved out of the code folder into this PC's protected storage (python -m suite_services.access secrets import)
+        try:
+            import json
+            from suite_services.access.config import read_secret
+            uri = json.loads(read_secret("db_sir") or "{}").get("MONGODB_URI", "")
+        except Exception:
+            uri = ""
+    if not uri:
         return "Not configured"
     if uri.startswith("mongodb+srv://") and ".mongodb.net" in uri:
         return "MongoDB Atlas"
@@ -132,7 +140,89 @@ def probe(port, timeout=1.5):
     return "other"
 
 
-def start_server(project_root, port=None, log_path=None):
+def server_env(secret=None, extra_env=None, **fixed):
+    """The server's environment: the launcher's per-run secret and database settings travel here, never on the
+    command line or in the log."""
+    env = dict(os.environ, NEXT_TELEMETRY_DISABLED="1", **fixed)
+    if secret:
+        env["NERAVEDA_WEB_SECRET"] = secret
+    env.update(extra_env or {})
+    return env
+
+
+def _processes():
+    """{pid: (parent pid, image name)} from a Toolhelp snapshot (no WMIC, no PowerShell)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)
+    found = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while ok:
+            found[entry.th32ProcessID] = (entry.th32ParentProcessID, entry.szExeFile.lower())
+            ok = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return found
+
+
+def listening_pid(port):
+    """PID of the process listening on 127.0.0.1/localhost:<port>, or None."""
+    try:
+        output = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=15,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[0] == "TCP" and parts[3] == "LISTENING" and parts[1].endswith(f":{port}"):
+            try:
+                return int(parts[4])
+            except ValueError:
+                continue
+    return None
+
+
+def stop_listener(port):
+    """Stop a Node server left running on the port (e.g. started before this NeraVeda session).
+    Only node.exe is stopped, together with its `next` parent; anything else is left alone. True if stopped."""
+    pid = listening_pid(port)
+    if pid is None:
+        return False
+    try:
+        table = _processes()
+    except Exception:
+        return False
+    if table.get(pid, (0, ""))[1] != "node.exe":
+        return False
+    top = pid
+    for _ in range(2):  # `next dev` runs the listener as a child of another node process
+        parent = table.get(top, (0, ""))[0]
+        if table.get(parent, (0, ""))[1] == "node.exe":
+            top = parent
+    try:
+        subprocess.run(["taskkill", "/PID", str(top), "/T", "/F"], capture_output=True, timeout=15,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for _ in range(20):
+        if listening_pid(port) is None:
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def start_server(project_root, port=None, log_path=None, secret=None, extra_env=None):
     """Start the Next.js server without a console window. Returns (process, mode)."""
     folder = app_dir(project_root)
     port = port or server_port()
@@ -147,7 +237,7 @@ def start_server(project_root, port=None, log_path=None):
     log = open(log_path, "a", encoding="utf-8", buffering=1) if log_path else subprocess.DEVNULL
     if log_path:
         log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')}  next {mode} on {app_url(port)}\n")
-    env = dict(os.environ, NEXT_TELEMETRY_DISABLED="1")
+    env = server_env(secret, extra_env, SIR_PORT=str(port))
     try:
         process = subprocess.Popen(
             server_command(node, folder, port, mode), cwd=str(folder), env=env,

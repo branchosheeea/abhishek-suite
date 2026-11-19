@@ -11,4 +11,7 @@ def main():
     run_ui(args.data_root)
 
 
-if __name__=="__main__": main()
+if __name__=="__main__":
+    from suite_services.access.guard import require_module
+    require_module("gc")
+    main()

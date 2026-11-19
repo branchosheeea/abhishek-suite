@@ -34,7 +34,7 @@ SCHEMA_VERSION = 2
 DEFAULTS = {
     "standard_followup_days": 7, "no_response_days": 14, "verification_days": 5,
     "dispatch_followup_days": 1, "delivery_followup_days": 1, "graph_sync_interval_minutes": 5,
-    "guarantee_alert_days": [90, 60, 30, 14], "local_user_name": os.getenv("GC_LOCAL_USER_NAME", "Abhishek Gupta"),
+    "guarantee_alert_days": [90, 60, 30, 14], "local_user_name": os.getenv("GC_LOCAL_USER_NAME") or None,
     "vessel_auto_match_threshold": int(os.getenv("GC_VESSEL_AUTO_MATCH_THRESHOLD",90)),
     "vessel_review_threshold": int(os.getenv("GC_VESSEL_REVIEW_THRESHOLD",80)),
     "vessel_match_margin": int(os.getenv("GC_VESSEL_MATCH_MARGIN",8)),
@@ -110,8 +110,12 @@ class Repository:
 
     @property
     def actor(self):
+        """GC_LOCAL_USER_NAME when set (tests, one-off), else the person signed in to NeraVeda, else the stored name."""
         if "GC_LOCAL_USER_NAME" in os.environ:
             return os.getenv("GC_LOCAL_USER_NAME", "").strip() or None
+        from suite_services import actor as suite_actor
+        if suite_actor.signed_in():
+            return suite_actor.current_actor()
         return self.settings().get("local_user_name") or None
 
     def vessels(self, active_only=True):
