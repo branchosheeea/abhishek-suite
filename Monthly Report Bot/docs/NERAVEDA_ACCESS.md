@@ -8,6 +8,7 @@ registration see [NERAVEDA_ACCESS_IT_REQUEST.md](NERAVEDA_ACCESS_IT_REQUEST.md).
 
 ```
  Microsoft Entra ID ──(MSAL, User.Read)──►  Launcher (abhishek_automation_suite.py)
+   or NeraVeda ID + password (passwords.py) ─┤
                                               │  AccessService  (suite_services/access/session.py)
  Atlas: neraveda_access ◄──read-only URI──────┤     ├─ session.bin   (DPAPI, read by desktop modules)
    users / audit / meta  ◄──admin URI (admins)┤     └─ web_{sir,evi}.bin (DPAPI, per-server-run secret)
@@ -27,12 +28,13 @@ signed with a secret that only the launcher and that server run hold.
 
 | Area | Files |
 |---|---|
-| DPAPI storage | `suite_services/secure_store.py` (`protect`, `unprotect`, `write_protected`, `read_protected`, `remove`; purpose string as entropy) |
+| DPAPI storage | `suite_services/secure_store.py` (`protect`, `unprotect`, `write_protected`, `read_protected`, `remove`; purpose string as entropy; crypt32 called through ctypes, so no pywin32 is needed on the Python the shortcut uses) |
 | Audit identity | `suite_services/actor.py` (`current_actor()`: signed-in email, else the Windows user) |
 | Settings | `suite_services/access/config.py`, `policy.json` |
 | Rights model | `suite_services/access/entitlements.py` (pure) |
 | Access list | `suite_services/access/store.py` (`AccessStore` on pymongo, `MemoryAccessStore` for tests) |
 | Microsoft sign-in | `suite_services/access/signin.py` (`EntraSignIn`) |
+| NeraVeda passwords | `suite_services/access/passwords.py` (verifiers, rules, signed change chain) |
 | Session and launcher API | `suite_services/access/session.py` (`Session`, `SessionStore`, `AccessService`) |
 | Tickets | `suite_services/access/tickets.py`; Node twin in each app's `lib/server/auth.ts` |
 | Desktop guard | `suite_services/access/guard.py` (`require_module`) |
@@ -54,7 +56,9 @@ checks simple.
 | Inspection / Emissions database settings | (none) | `<runtime_root>/access/db_sir.bin`, `db_evi.bin` (DPAPI, JSON) |
 | Sign-in required | (none) | `suite_services/access/policy.json` in the code folder |
 
-- **Configured** means tenant ID, client ID and read-only URI are all present.
+- **Configured** means the read-only URI is present. The PC then offers NeraVeda ID and password sign-in.
+- **Microsoft** is available when it is configured and the tenant and client IDs are both present as well.
+  `setup` accepts both IDs or neither.
 - **Local mode** means not configured and `required` is false. The Windows user then gets every module, which is
   how the suite behaved before.
 - If `policy.json` cannot be read, sign-in counts as required. An unreadable file never weakens access.
@@ -74,13 +78,53 @@ is DPAPI-protected. Sign-in tries these in order:
 The resulting `Identity` holds `email` (lower-cased `preferred_username`), `oid`, `tid` and `name`. If `tid` is not the
 configured tenant, sign-in is refused.
 
+## NeraVeda ID and password
+
+The ID is the person's email in the access list. `passwords.py` has the details.
+
+**What is stored.** `users.password = {verifier, epoch, temporary, set_at, set_by}` is written only with the admin
+credential. The verifier `{alg: "scrypt-ed25519", n, r, p, salt, pub}` holds no password:
+- `seed = scrypt(NFKC(password), salt, n=2^16, r=8, p=1)`. That is 64 MB of memory and about 0.3 s per check.
+- `pub` is the Ed25519 public key for that seed.
+- Checking a password means deriving `pub` again and comparing it in constant time.
+- Accepted costs are bounded (`n` ≤ 2^18, `r` ≤ 8), so a planted record cannot make a PC spend gigabytes.
+
+**Temporary passwords.** An admin sets one: 16 random characters, shown once. Signing in with it raises
+`PasswordChangeRequired`, and no session is written until the person has chosen their own password.
+
+**People's own changes.** People change their own password without an admin credential:
+- A change is a record in `password_changes`: `{email, epoch, seq, verifier, prev, at, sig}`.
+- It is signed with the private key derived from the **previous** password. The read-only role may insert into
+  `password_changes`, but cannot update or remove there.
+- Every PC rebuilds the current password with `resolve()`: start from `users.password`, then repeatedly take a
+  record with the next `seq`, the same `epoch` and `prev` equal to the current `pub`, whose signature verifies with
+  the current `pub`. If several qualify, the lowest `(at, sig)` wins, so every PC reaches the same result.
+- A planted, edited or replayed record does not verify against the current key, so it is ignored. Nobody can set
+  another person's password, even with direct database access.
+- An admin reset writes a new `users.password` with `epoch + 1`, which ends the old chain.
+
+**Rules.** A new password needs at least 12 characters and at least 5 different characters. It must not contain the
+ID's local part, must not be on a short list of common passwords, and must differ from the current one.
+
+**Answers and attempts.**
+- An unknown ID, a person without a password, and a wrong password all get the same answer: *"The NeraVeda ID or
+  password is not correct"*. They also take the same time (`passwords.spend()` runs the same scrypt), so response
+  timing does not show which IDs exist.
+- Deactivation is reported only after the right password.
+- After 5 wrong attempts within 30 minutes, the launcher waits 60 s, then doubles the wait up to 15 minutes. This
+  limit is in memory on that PC.
+
+**Package.** Ed25519 comes from `cryptography`, a dependency of `msal` that is also listed in `requirements.txt`.
+Without it, `passwords.available()` is false and Admin says so. Local mode never needs it.
+
 ## Access list (`neraveda_access`)
 
 | Collection | Content | Written by |
 |---|---|---|
-| `users` | `{email (unique, lower-case), oid (unique when set), name, active, admin, grants: [{module, role: "use"}], note, rev, created_at/by, updated_at/by}` | admin URI only |
-| `audit` | `{at, actor {email, oid, name}, db_user, action, target, rev, before, after, changes ["+oil", "-sir", "admin:false→true"], reason, client {host, windows_user, app_version}}` | admin URI, insert only |
+| `users` | `{email (unique, lower-case), oid (unique when set), name, active, admin, grants: [{module, role: "use"}], password (or null), note, rev, created_at/by, updated_at/by}` | admin URI only |
+| `audit` | `{at, actor {email, oid, name}, db_user, action, target, rev, before, after, changes ["+oil", "-sir", "admin:false→true", "password:temporary"], reason, client {host, windows_user, app_version}}`. `before`/`after` record a password's state only (epoch, temporary, set_at/by), never the verifier. | admin URI, insert only |
 | `meta` | `{_id: "policy", session_hours: 12, offline_grace_hours: 72, refresh_minutes: 15, rev}` | admin URI |
+| `password_changes` | people's own changes, signed with their previous password (above); index `email, epoch, seq`, not unique, so a planted record can never block a real change | read-only URI, insert only |
 
 - **Saves** (`AccessStore.save_user`) update the user only where `rev` is still the value the admin loaded, and
   write the audit entry in the same transaction. If `rev` changed, `ConflictError` is raised. If the save would
@@ -100,7 +144,8 @@ not use them.
 ## Session
 
 After sign-in and the access-list lookup, `AccessService` writes `session.bin` (DPAPI) with email, name, oid, admin,
-modules, `signed_in_at`, `verified_at` and the policy values. A session is valid while:
+modules, `mode` (`entra` or `password`), `signed_in_at`, `verified_at` and the policy values. For password sessions it
+also writes `credential` (the epoch, sequence number and key of the password used). A session is valid while:
 
 ```
 now < signed_in_at + session_hours          (12 h, then a silent re-sign-in)
@@ -112,6 +157,10 @@ now < verified_at  + offline_grace_hours    (72 h without reaching the access li
   carry no grant for them, so the web workspace answers 403.
 - **Rights added:** they appear after a restart.
 - **Deactivated or missing person:** that person is signed out at the next check.
+- **Password reset or changed elsewhere:** if the password now in force is no longer the one in `credential`, a
+  password session ends at the next check. The cause can be an admin reset, the person's change on another PC, or
+  password sign-in being removed. A change made on this PC updates `credential`.
+- **After 12 hours:** a Microsoft session renews silently, while a password session asks for the password again.
 
 ## Desktop modules
 
@@ -234,7 +283,7 @@ The Emissions app already sent its equivalents.
 
 | Suite | Command | Access-related files |
 |---|---|---|
-| Python | `.venv\Scripts\python.exe -m unittest discover -s tests` | `tests/test_access_core.py`, `tests/test_access_launcher.py`; launcher tests use `AutomationSuite(access=FakeAccess())` |
+| Python | `.venv\Scripts\python.exe -m unittest discover -s tests` | `tests/test_access_core.py` (incl. passwords: verifiers, rules, planted/replayed changes, temporary flow, attempt limit, reset), `tests/test_access_launcher.py`; launcher tests use `AutomationSuite(access=FakeAccess())` |
 | Emissions | `npm test` in `Emission Correction Assitant` | `tests/auth.test.ts` |
 | Inspection | `npm test` in `Superintendent inspection Report` | `tests/auth.test.ts` |
 | End to end | `python -m suite_services.access webcheck sir\|evi` (server started from NeraVeda) | 9 checks: health, no session, entry, cookie, write header, foreign host, service ticket with and without, revoke |
@@ -252,9 +301,21 @@ What this design does:
 - It reliably stops casual and accidental use.
 - It attributes every action to a signed-in person.
 
+NeraVeda passwords add these limits:
+- **Offline guessing:** every PC can read the stored verifiers, because each PC checks passwords itself. Someone
+  with the read-only credential could try to guess weak passwords offline. scrypt makes each guess cost about
+  0.3 s and 64 MB, and the 12-character rule keeps reasonable passwords out of reach. People should still not reuse
+  their Windows or Microsoft password.
+- **Online guessing:** the wrong-attempt wait applies only within the launcher on one PC. Edited code avoids it.
+- **No MFA, and no automatic leaver handling:** deactivate leavers in Admin.
+- **Planted records:** a holder of the read-only credential can insert junk into `password_changes`. It is ignored,
+  and it cannot change anyone's password.
+
 What is enforced outside the PC:
 - **Microsoft sign-in:** only company accounts can sign in, with MFA and Conditional Access. If IT sets *Assignment
   required*, only assigned people can sign in at all.
+- **Password changes:** only someone who knows a person's current password can change it. The signature makes this
+  hold even for someone with direct database access.
 - **Atlas roles:**
   - The read-only credential cannot change the access list.
   - Admin credentials cannot delete people or audit entries.

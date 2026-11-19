@@ -22,7 +22,7 @@ import customtkinter as ctk
 
 from vessel_report.scroll_input import ScrollRouter
 from suite_services import emissions_server, home_intelligence, inspection_server
-from suite_services.access.session import AccessDenied, AccessService, SessionExpired
+from suite_services.access.session import AccessDenied, AccessService, PasswordChangeRequired, SessionExpired
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -221,11 +221,17 @@ class AutomationSuite(ctk.CTk):
 
     def _show_signin(self):
         from suite_services.access.ui import SignInPanel
+        methods = getattr(self.access, "signin_methods", {"microsoft": True, "password": False})
         self.signin_panel = SignInPanel(self, on_sign_in=self._sign_in_interactive, on_code=self._sign_in_with_code,
-                                        on_close=self.destroy, needs_setup=bool(getattr(self.access, "needs_setup", False)))
+                                        on_password=self._sign_in_with_password, on_close=self.destroy, methods=methods,
+                                        needs_setup=bool(getattr(self.access, "needs_setup", False)))
         self.signin_panel.pack(fill="both", expand=True)
-        if not getattr(self.access, "needs_setup", False):
+        if not getattr(self.access, "needs_setup", False) and methods.get("microsoft"):
             self._run_signin(self.access.try_silent, "Checking for a signed-in Microsoft account…", silent=True)
+
+    def _sign_in_with_password(self, email, password, new_password=None):
+        text = "Setting your password and signing in…" if new_password else "Checking your NeraVeda ID and password…"
+        self._run_signin(lambda: self.access.sign_in_with_password(email, password, new_password), text)
 
     def _window_handle(self):
         try:
@@ -248,6 +254,8 @@ class AutomationSuite(ctk.CTk):
         def work():
             try:
                 self._signin_events.put(("done", fn(), silent))
+            except PasswordChangeRequired as error:
+                self._signin_events.put(("change", error, silent))
             except AccessDenied as error:
                 self._signin_events.put(("denied", error, silent))
             except Exception as error:
@@ -273,9 +281,14 @@ class AutomationSuite(ctk.CTk):
             self._build_dashboard()
         elif kind == "done":
             self.signin_panel.ready("")  # no cached Microsoft account: wait for the person to sign in
-        elif kind == "denied":
+        elif kind == "change":
             self.signin_panel.ready()
-            self.signin_panel.error("No access to NeraVeda", str(value), getattr(value, "email", None))
+            self.signin_panel.ask_new_password(str(value))
+        elif kind == "denied":
+            email = getattr(value, "email", None)
+            self.signin_panel.ready()
+            self.signin_panel.clear_password()
+            self.signin_panel.error("No access to NeraVeda" if email else "Not signed in", str(value), email)
         elif event[2]:
             self.signin_panel.ready("")  # a failed silent attempt is not an error worth showing
         else:
@@ -367,7 +380,11 @@ class AutomationSuite(ctk.CTk):
         self.sign_out_button = ctk.CTkButton(
             actions, text="Sign out", command=self.sign_out, width=82, height=28, corner_radius=8, fg_color=IDLE_BG,
             hover_color=SEP, text_color=INK, border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"))
+        self.password_button = ctk.CTkButton(
+            actions, text="Change password", command=self.change_password, width=128, height=28, corner_radius=8, fg_color=IDLE_BG,
+            hover_color=SEP, text_color=BTN, border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"))
         self._focusable(self.admin_button)
+        self._focusable(self.password_button)
         self._focusable(self.sign_out_button)
         self._update_user_box()
 
@@ -377,6 +394,7 @@ class AutomationSuite(ctk.CTk):
             self.user_name.configure(text=access.user_label)
             self.user_note.configure(text="Sign-in not set up · all workspaces (local mode)")
             self.admin_button.pack_forget()
+            self.password_button.pack_forget()
             self.sign_out_button.pack_forget()
             return
         self.user_name.configure(text=access.user_label)
@@ -389,9 +407,12 @@ class AutomationSuite(ctk.CTk):
             note = "Offline: working from your last checked rights" + when
         self.user_note.configure(text=note)
         self.admin_button.pack_forget()
+        self.password_button.pack_forget()
         self.sign_out_button.pack_forget()
         if access.can_administer:
             self.admin_button.pack(side="left", padx=(0, 6))
+        if getattr(access, "password_user", False):
+            self.password_button.pack(side="left", padx=(0, 6))
         self.sign_out_button.pack(side="left")
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
@@ -1049,6 +1070,8 @@ class AutomationSuite(ctk.CTk):
             webbrowser.open(self.access.web_entry_url(key, port, target))
         except SessionExpired as error:
             self._end_session(str(error))
+        except Exception as error:  # never fail silently: the person would see nothing happen
+            messagebox.showerror("Could not open the workspace", f"NeraVeda could not open {TITLES.get(key, key)} in the browser:\n{error}", parent=self)
 
     def _adopt_or_restart(self, key, port, title, stop_listener):
         """A server of this workspace is already listening (started outside this NeraVeda session). Use it if it
@@ -1097,7 +1120,7 @@ class AutomationSuite(ctk.CTk):
             SIR_LOG.parent.mkdir(exist_ok=True)
             self.sir_process, mode = inspection_server.start_server(
                 PROJECT_ROOT, port, SIR_LOG, secret=self.access.web_secret("sir", rotate=True), extra_env=self.access.db_env("sir"))
-        except (OSError, inspection_server.InspectionAppError) as error:
+        except Exception as error:  # e.g. Node missing, dependencies not installed, protected storage unavailable
             messagebox.showerror("Could not open Superintendent Inspection Report", str(error), parent=self)
             return
         self.sir_mode = None
@@ -1191,7 +1214,7 @@ class AutomationSuite(ctk.CTk):
             EVI_LOG.parent.mkdir(exist_ok=True)
             self.evi_process, mode = emissions_server.start_server(
                 PROJECT_ROOT, port, EVI_LOG, secret=self.access.web_secret("evi", rotate=True), extra_env=self.access.db_env("evi"))
-        except (OSError, emissions_server.InspectionAppError) as error:
+        except Exception as error:  # e.g. Node missing, dependencies not installed, protected storage unavailable
             messagebox.showerror("Could not open Emissions Validation", str(error), parent=self)
             return
         self.evi_mode = None
@@ -1351,6 +1374,12 @@ class AutomationSuite(ctk.CTk):
             self.access.sign_out()
         finally:
             self.destroy()
+
+    def change_password(self):
+        if not getattr(self.access, "password_user", False):
+            return
+        from suite_services.access.ui import ChangePasswordDialog
+        ChangePasswordDialog(self, self.access)
 
     def open_admin(self):
         if not self.access.can_administer:

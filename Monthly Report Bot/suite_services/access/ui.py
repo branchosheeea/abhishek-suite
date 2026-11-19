@@ -9,7 +9,9 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
+from suite_services.access import passwords
 from suite_services.access.entitlements import MODULE_TITLES, MODULES, UserAccess, normalise_email
+from suite_services.access.passwords import MIN_LENGTH
 
 BG, SURFACE, INK, MUTED, SEP = "#F3F6F9", "#FFFFFF", "#0F1B2A", "#5F6B7A", "#E3E8EE"
 NAVY, BTN, BTN_HV, IDLE_BG = "#0E2A47", "#1557A0", "#114888", "#EEF1F4"
@@ -24,11 +26,23 @@ def _label(parent, text, size=12, color=INK, bold=False, **kwargs):
     return ctk.CTkLabel(parent, text=text, text_color=color, font=_font(size, bold), anchor="w", justify="left", **kwargs)
 
 
-class SignInPanel(ctk.CTkFrame):
-    """Shown instead of the home screen until the person is signed in."""
+def _entry(parent, placeholder, secret=False, height=36):
+    """A light text box, whatever the appearance mode."""
+    return ctk.CTkEntry(parent, placeholder_text=placeholder, show="•" if secret else "", height=height, corner_radius=8,
+                        fg_color=SURFACE, border_color=SEP, border_width=1, text_color=INK, placeholder_text_color=MUTED,
+                        font=_font(12))
 
-    def __init__(self, master, *, on_sign_in, on_code, on_close, needs_setup: bool = False):
+
+class SignInPanel(ctk.CTkFrame):
+    """Shown instead of the home screen until the person is signed in: Microsoft and/or NeraVeda ID and password,
+    whichever this PC offers."""
+
+    def __init__(self, master, *, on_sign_in, on_code, on_close, on_password=None, needs_setup: bool = False, methods=None):
         super().__init__(master, fg_color=BG, corner_radius=0)
+        methods = methods or {"microsoft": True, "password": False}
+        self.methods = {"microsoft": bool(methods.get("microsoft")), "password": bool(methods.get("password")) and on_password is not None}
+        self.on_password = on_password
+        both = self.methods["microsoft"] and self.methods["password"]
         card = ctk.CTkFrame(self, fg_color=SURFACE, border_width=1, border_color=SEP, corner_radius=16, width=460)
         card.place(relx=0.5, rely=0.45, anchor="center")
         brand = ctk.CTkFrame(card, fg_color="transparent")
@@ -43,15 +57,52 @@ class SignInPanel(ctk.CTkFrame):
         _label(names, "Fleet Intelligence Suite", 11, MUTED).pack(anchor="w")
 
         _label(card, "Sign in", 20, INK, True).pack(anchor="w", padx=32, pady=(22, 2))
-        self.intro = _label(card, "Use your Goodwood Microsoft work account. Your admin decides which workspaces you can open.",
-                            12, MUTED, wraplength=390)
+        intro = ("Use your Goodwood Microsoft work account, or your NeraVeda ID and password." if both
+                 else "Use your NeraVeda ID (your work email) and password." if self.methods["password"]
+                 else "Use your Goodwood Microsoft work account.")
+        self.intro = _label(card, f"{intro} Your admin decides which workspaces you can open.", 12, MUTED, wraplength=390)
         self.intro.pack(anchor="w", padx=32)
+
         self.sign_in_button = ctk.CTkButton(card, text="Sign in with Microsoft", command=on_sign_in, height=40, corner_radius=10,
                                             fg_color=BTN, hover_color=BTN_HV, font=_font(12, True))
-        self.sign_in_button.pack(fill="x", padx=32, pady=(20, 6))
         self.code_button = ctk.CTkButton(card, text="Sign in with a code instead", command=on_code, height=32, corner_radius=10,
                                          fg_color="transparent", hover_color=IDLE_BG, text_color=BTN, font=_font(11, True))
-        self.code_button.pack(fill="x", padx=32)
+        if self.methods["microsoft"]:
+            self.sign_in_button.pack(fill="x", padx=32, pady=(20, 6))
+            self.code_button.pack(fill="x", padx=32)
+
+        # NeraVeda ID and password
+        self.password_box = ctk.CTkFrame(card, fg_color="transparent")
+        self.id_entry = _entry(self.password_box, "NeraVeda ID (your work email)")
+        self.password_entry = _entry(self.password_box, "Password", secret=True)
+        self.password_button = ctk.CTkButton(self.password_box, text="Sign in with password" if both else "Sign in",
+                                             command=self._submit_password, height=38, corner_radius=10,
+                                             fg_color=IDLE_BG if both else BTN, hover_color=SEP if both else BTN_HV,
+                                             text_color=BTN if both else "#FFFFFF", font=_font(12, True))
+        self.change_box = ctk.CTkFrame(card, fg_color="transparent")
+        _label(self.change_box, "Choose your own password", 13, INK, True).pack(anchor="w")
+        _label(self.change_box, f"At least {MIN_LENGTH} characters. Do not reuse your Windows or Microsoft password.",
+               11, MUTED, wraplength=390).pack(anchor="w", pady=(2, 6))
+        self.new_entry = _entry(self.change_box, "New password", secret=True)
+        self.new_entry.pack(fill="x")
+        self.confirm_entry = _entry(self.change_box, "New password again", secret=True)
+        self.confirm_entry.pack(fill="x", pady=(8, 0))
+        self.change_button = ctk.CTkButton(self.change_box, text="Set password and sign in", command=self._submit_new, height=38,
+                                           corner_radius=10, fg_color=BTN, hover_color=BTN_HV, font=_font(12, True))
+        self.change_button.pack(fill="x", pady=(10, 0))
+        self.or_label = _label(card, "or with your NeraVeda ID", 11, MUTED)
+        if self.methods["password"]:
+            if both:
+                self.or_label.pack(anchor="w", padx=32, pady=(16, 0))
+            self.password_box.pack(fill="x", padx=32, pady=(6 if both else 18, 0))
+            self.id_entry.pack(fill="x")
+            self.password_entry.pack(fill="x", pady=(8, 0))
+            self.password_button.pack(fill="x", pady=(10, 0))
+            for entry in (self.id_entry, self.password_entry):
+                entry.bind("<Return>", self._submit_password)
+            for entry in (self.new_entry, self.confirm_entry):
+                entry.bind("<Return>", self._submit_new)
+
         self.status = _label(card, "", 11, MUTED, wraplength=390)
         self.status.pack(anchor="w", padx=32, pady=(14, 0))
         self.detail = ctk.CTkTextbox(card, height=0, fg_color=IDLE_BG, text_color=INK, font=_font(11), wrap="word", corner_radius=8)
@@ -59,21 +110,51 @@ class SignInPanel(ctk.CTkFrame):
                                           hover_color=SEP, text_color=INK, font=_font(11, True))
         self.close_button.pack(fill="x", padx=32, pady=(14, 26))
         if needs_setup:
-            self.sign_in_button.configure(state="disabled")
-            self.code_button.configure(state="disabled")
+            for button in self._buttons():
+                button.configure(state="disabled")
             self.error("Sign-in is not set up on this PC",
                        "NeraVeda requires sign-in, but this PC has no sign-in settings yet. Ask your NeraVeda admin to set it up "
                        "(python -m suite_services.access setup).")
 
+    def _buttons(self):
+        return (self.sign_in_button, self.code_button, self.password_button, self.change_button)
+
     def busy(self, text: str) -> None:
-        self.sign_in_button.configure(state="disabled")
-        self.code_button.configure(state="disabled")
+        for button in self._buttons():
+            button.configure(state="disabled")
         self.status.configure(text=text, text_color=MUTED)
 
     def ready(self, text: str = "") -> None:
-        self.sign_in_button.configure(state="normal")
-        self.code_button.configure(state="normal")
+        for button in self._buttons():
+            button.configure(state="normal")
         self.status.configure(text=text, text_color=MUTED)
+
+    def _submit_password(self, _event=None):
+        if self.on_password is not None and str(self.password_button.cget("state")) == "normal":
+            self.on_password(self.id_entry.get().strip(), self.password_entry.get(), None)
+
+    def ask_new_password(self, message: str) -> None:
+        """The password was a temporary one: ask for the person's own before signing in."""
+        for widget in (self.sign_in_button, self.code_button, self.or_label, self.password_button):
+            widget.pack_forget()  # only this step is left; keeps the card within small windows
+        self.id_entry.configure(state="disabled")
+        self.password_entry.configure(state="disabled")
+        self.change_box.pack(fill="x", padx=32, pady=(14, 0), before=self.status)
+        self.status.configure(text=message, text_color=INK)
+        self.new_entry.focus_set()
+
+    def _submit_new(self, _event=None):
+        if self.on_password is None or str(self.change_button.cget("state")) != "normal":
+            return
+        new, again = self.new_entry.get(), self.confirm_entry.get()
+        if new != again:
+            self.error("The two new passwords do not match", "Type the same new password in both boxes.")
+            return
+        self.on_password(self.id_entry.get().strip(), self.password_entry.get(), new)
+
+    def clear_password(self) -> None:
+        if str(self.password_entry.cget("state")) == "normal":
+            self.password_entry.delete(0, "end")
 
     def _show_detail(self, text: str) -> None:
         self.detail.configure(state="normal", height=70)
@@ -92,6 +173,73 @@ class SignInPanel(ctk.CTkFrame):
         self._show_detail(text + extra)
 
 
+class ChangePasswordDialog(ctk.CTkToplevel):
+    """A person changes their own NeraVeda password (signed with the current one; no admin needed)."""
+
+    def __init__(self, master, access):
+        super().__init__(master)
+        self.title("NeraVeda · Change password")
+        self.geometry("440x400")
+        self.resizable(False, False)
+        self.configure(fg_color=BG)
+        self.access = access
+        self.events: queue.Queue = queue.Queue()
+        card = ctk.CTkFrame(self, fg_color=SURFACE, border_width=1, border_color=SEP, corner_radius=12)
+        card.pack(fill="both", expand=True, padx=16, pady=16)
+        _label(card, "Change your NeraVeda password", 15, INK, True).pack(anchor="w", padx=20, pady=(18, 2))
+        _label(card, f"At least {MIN_LENGTH} characters. Do not reuse your Windows or Microsoft password. "
+                     "Other PCs where you are signed in will ask you to sign in again.", 11, MUTED, wraplength=370).pack(anchor="w", padx=20)
+        self.current = _entry(card, "Current password", secret=True, height=34)
+        self.current.pack(fill="x", padx=20, pady=(14, 0))
+        self.new = _entry(card, "New password", secret=True, height=34)
+        self.new.pack(fill="x", padx=20, pady=(8, 0))
+        self.again = _entry(card, "New password again", secret=True, height=34)
+        self.again.pack(fill="x", padx=20, pady=(8, 0))
+        self.save_button = ctk.CTkButton(card, text="Change password", command=self.save, height=36, corner_radius=10,
+                                         fg_color=BTN, hover_color=BTN_HV, font=_font(12, True))
+        self.save_button.pack(fill="x", padx=20, pady=(14, 0))
+        self.status = _label(card, "", 11, MUTED, wraplength=370)
+        self.status.pack(anchor="w", padx=20, pady=(10, 0))
+        self.transient(master)
+        self.after(50, self.lift)
+        self.current.focus_set()
+
+    def save(self):
+        old, new, again = self.current.get(), self.new.get(), self.again.get()
+        if new != again:
+            self.status.configure(text="The two new passwords do not match.", text_color=CRITICAL)
+            return
+        self.save_button.configure(state="disabled")
+        self.status.configure(text="Changing…", text_color=MUTED)
+
+        def work():
+            try:
+                self.access.change_password(old, new)
+                self.events.put(("ok", None))
+            except Exception as error:  # shown to the person; never crashes the launcher
+                self.events.put(("error", error))
+        threading.Thread(target=work, daemon=True).start()
+        self.after(120, self._poll)
+
+    def _poll(self):
+        try:
+            kind, error = self.events.get_nowait()
+        except queue.Empty:
+            self.after(120, self._poll)
+            return
+        except tk.TclError:
+            return
+        try:
+            if kind == "ok":
+                self.status.configure(text="Password changed.", text_color=GOOD)
+                self.after(1200, self.destroy)
+            else:
+                self.save_button.configure(state="normal")
+                self.status.configure(text=str(error), text_color=CRITICAL)
+        except tk.TclError:
+            return
+
+
 class AdminWindow(ctk.CTkToplevel):
     """People and their workspaces. Every save is checked against the version loaded and audited centrally."""
 
@@ -107,6 +255,9 @@ class AdminWindow(ctk.CTkToplevel):
         self.people: list[UserAccess] = []
         self.current: UserAccess | None = None
         self.creating = False
+        #: None (unchanged) | ("set", temporary password, record) | ("remove", None, None); applied on Save
+        self.pending_password = None
+        self._saving_password = None
         self.module_vars = {m: tk.BooleanVar(value=False) for m in MODULES}
         self.admin_var = tk.BooleanVar(value=False)
         self.active_var = tk.BooleanVar(value=True)
@@ -147,7 +298,7 @@ class AdminWindow(ctk.CTkToplevel):
         form.pack(fill="both", expand=True, padx=8, pady=8)
         self.heading = _label(form, "Choose a person, or add one.", 15, INK, True)
         self.heading.pack(anchor="w", padx=10, pady=(6, 10))
-        _label(form, "Sign-in name (work email)", 11, MUTED, True).pack(anchor="w", padx=10)
+        _label(form, "Sign-in ID (work email)", 11, MUTED, True).pack(anchor="w", padx=10)
         self.email = ctk.CTkEntry(form, height=32)
         self.email.pack(fill="x", padx=10, pady=(2, 8))
         _label(form, "Name", 11, MUTED, True).pack(anchor="w", padx=10)
@@ -157,6 +308,17 @@ class AdminWindow(ctk.CTkToplevel):
         flags.pack(fill="x", padx=10, pady=(0, 8))
         ctk.CTkSwitch(flags, text="Active (may sign in)", variable=self.active_var, font=_font(12)).pack(side="left", padx=(0, 18))
         ctk.CTkSwitch(flags, text="Admin (manages people)", variable=self.admin_var, font=_font(12)).pack(side="left")
+        _label(form, "NeraVeda password (sign-in without Microsoft)", 11, MUTED, True).pack(anchor="w", padx=10, pady=(6, 2))
+        pw = ctk.CTkFrame(form, fg_color="transparent")
+        pw.pack(fill="x", padx=10, pady=(0, 6))
+        self.remove_password_button = ctk.CTkButton(pw, text="Remove", width=76, height=30, command=self.remove_password, fg_color=IDLE_BG,
+                                                    hover_color=SEP, text_color=CRITICAL, font=_font(11, True))
+        self.remove_password_button.pack(side="right", padx=(6, 0))
+        self.temp_password_button = ctk.CTkButton(pw, text="Set temporary password", width=170, height=30, command=self.set_temporary_password,
+                                                  fg_color=IDLE_BG, hover_color=SEP, text_color=BTN, font=_font(11, True))
+        self.temp_password_button.pack(side="right")
+        self.password_state = _label(pw, "", 11, MUTED, wraplength=300)
+        self.password_state.pack(side="left", fill="x", expand=True)
         _label(form, "Workspaces", 11, MUTED, True).pack(anchor="w", padx=10, pady=(6, 2))
         grid = ctk.CTkFrame(form, fg_color="transparent")
         grid.pack(fill="x", padx=10)
@@ -220,14 +382,38 @@ class AdminWindow(ctk.CTkToplevel):
                 f"{a.get('at', '')[:16].replace('T', ' ')}  {a.get('actor', {}).get('email', '?')}  {a.get('action', '')}  {a.get('target', '')}  "
                 f"{' '.join(a.get('changes') or [])}{'  — ' + a['reason'] if a.get('reason') else ''}" for a in rows) or "No changes recorded yet.")
             self.audit_box.configure(state="disabled")
+        elif kind == "password":
+            email, current = value if not error else (None, None)
+            if error:
+                self.password_state.configure(text=f"Password state could not be checked: {error}", text_color=CRITICAL)
+            elif self.pending_password is None and self.current is not None and self.current.email == email:
+                self.password_state.configure(text=self._password_text(self.current, current), text_color=MUTED)
+        elif kind == "temp":
+            self.temp_password_button.configure(state="normal")
+            if error:
+                self.status.configure(text=str(error), text_color=CRITICAL)
+                return
+            temporary, record = value
+            self.pending_password = ("set", temporary, record)
+            self.password_state.configure(text="A new temporary password is set when you press Save (shown once, after saving).", text_color=INK)
+            self.remove_password_button.configure(state="normal")
+            self.status.configure(text="Temporary password ready. Press Save.", text_color=MUTED)
         elif kind == "save":
             self.save_button.configure(state="normal")
             if error:
+                self._saving_password = None  # still pending: a retry saves it
                 self.status.configure(text=str(error), text_color=CRITICAL)
                 return
             self.current, self.creating = value, False
             self.status.configure(text=f"Saved {value.email}.", text_color=GOOD)
             self.reason.delete(0, "end")
+            saved_password, self._saving_password = self._saving_password, None
+            if saved_password and saved_password[0] == "set":
+                messagebox.showinfo(
+                    "Temporary password",
+                    f"Give this temporary password to {value.name or value.email}:\n\n{saved_password[1]}\n\n"
+                    "Their NeraVeda ID is their work email. They choose their own password the first time they sign in. "
+                    "This password is not shown again (Ctrl+C copies this message).", parent=self)
             self.reload()
 
     def reload(self):
@@ -263,7 +449,24 @@ class AdminWindow(ctk.CTkToplevel):
         self.admin_var.set(person.admin if person else False)
         for module, var in self.module_vars.items():
             var.set(bool(person) and module in person.modules)
-        self.save_button.configure(state="normal" if (person is not None or self.creating) else "disabled")
+        editable = person is not None or self.creating
+        self.save_button.configure(state="normal" if editable else "disabled")
+        self.pending_password = None
+        self.password_state.configure(text=self._password_text(person, None) if editable else "", text_color=MUTED)
+        self.temp_password_button.configure(state="normal" if editable else "disabled")
+        self.remove_password_button.configure(state="normal" if person is not None and person.password else "disabled")
+
+    @staticmethod
+    def _password_text(person: UserAccess | None, current) -> str:
+        record = person.password if person is not None else None
+        if not record:
+            return "Not set: this person signs in with Microsoft only."
+        when, by = str(record.get("set_at") or "")[:10], record.get("set_by") or "an admin"
+        if current is None:
+            return f"Set {when} by {by}." if not record.get("temporary") else f"Temporary password set {when} by {by}."
+        if current.temporary:
+            return f"Temporary password set {when} by {by}: to be replaced at first sign-in."
+        return "Set: chosen by the person." if current.seq else f"Set {when} by {by}."
 
     def _select(self, person: UserAccess | None):
         self.current, self.creating = person, False
@@ -272,19 +475,43 @@ class AdminWindow(ctk.CTkToplevel):
         self._set_form(person)
         self._render_people()
         self._run("audit", lambda: self.store.audit(limit=60, target=person.email if person else None))
+        if person is not None and person.password:
+            self._run("password", lambda: (person.email, passwords.resolve(person.email, person.password, self.store.password_changes(person.email))))
+
+    def set_temporary_password(self):
+        if self.current is None and not self.creating:
+            return
+        if not passwords.available():
+            self.status.configure(text="Passwords need the 'cryptography' package on this PC: run pip install -r requirements.txt.", text_color=CRITICAL)
+            return
+        temporary = passwords.generate_temporary()
+        epoch = int(((self.current.password if self.current else None) or {}).get("epoch", 0)) + 1
+        me = self.access.acting_as()["email"]
+        self.temp_password_button.configure(state="disabled")
+        self.status.configure(text="Preparing a temporary password…", text_color=MUTED)
+        self._run("temp", lambda: (temporary, passwords.base_record(passwords.new_verifier(temporary)[0], temporary=True, epoch=epoch, set_by=me)))
+
+    def remove_password(self):
+        self.pending_password = ("remove", None, None)
+        self.password_state.configure(text="Password sign-in is removed when you press Save.", text_color=CRITICAL)
+        self.remove_password_button.configure(state="disabled")
 
     def new_person(self):
         self.current, self.creating = None, True
         self.heading.configure(text="Add a person")
-        self.status.configure(text="Enter the exact Microsoft sign-in name (work email).", text_color=MUTED)
+        self.status.configure(text="Enter their work email: it is their Microsoft sign-in name and their NeraVeda ID. "
+                                   "For sign-in without Microsoft, also set a temporary password.", text_color=MUTED)
         self._set_form(None)
         self.email.focus_set()
 
     def form_value(self) -> UserAccess:
         email = normalise_email(self.email.get())
         base = self.current if self.current is not None else UserAccess(email=email)
-        return replace(base, email=email, name=self.name.get().strip(), active=bool(self.active_var.get()),
-                       admin=bool(self.admin_var.get())).with_modules([m for m, v in self.module_vars.items() if v.get()])
+        person = replace(base, email=email, name=self.name.get().strip(), active=bool(self.active_var.get()),
+                         admin=bool(self.admin_var.get())).with_modules([m for m, v in self.module_vars.items() if v.get()])
+        if self.pending_password is not None:
+            person = replace(person, password=self.pending_password[2] if self.pending_password[0] == "set" else None)
+        return person
 
     def save(self):
         try:
@@ -296,6 +523,10 @@ class AdminWindow(ctk.CTkToplevel):
         if self.current is not None and person.email == me["email"] and self.current.admin and not person.admin:
             self.status.configure(text="You cannot remove your own admin right. Ask another admin.", text_color=CRITICAL)
             return
+        if (self.pending_password and self.pending_password[0] == "remove" and person.email == me["email"]
+                and getattr(self.access, "password_user", False)):
+            self.status.configure(text="You are signed in with this password, so you cannot remove it here. Ask another admin.", text_color=CRITICAL)
+            return
         if not person.modules and person.active and not person.admin:
             if not messagebox.askyesno("No workspaces", f"{person.email} will be able to sign in but open no workspace. Save anyway?", parent=self):
                 return
@@ -303,4 +534,5 @@ class AdminWindow(ctk.CTkToplevel):
         reason = self.reason.get().strip()
         self.save_button.configure(state="disabled")
         self.status.configure(text="Saving…", text_color=MUTED)
+        self._saving_password = self.pending_password
         self._run("save", lambda: self.store.save_user(me, person, expected, reason))

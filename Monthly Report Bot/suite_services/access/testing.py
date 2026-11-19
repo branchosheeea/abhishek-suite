@@ -7,8 +7,12 @@ from suite_services.access.entitlements import MODULES
 class FakeAccess:
     def __init__(self, modules=MODULES, admin: bool = False, signed_in: bool = True, local_mode: bool = False,
                  can_administer: bool | None = None, accepts: bool = True, email: str = "tester@example.com", name: str = "Test User",
-                 store=None):
+                 store=None, methods=None, password: str | None = None, temporary: bool = False, password_user: bool = False):
         self.store = store
+        self.signin_methods = dict(methods or {"microsoft": True, "password": password is not None})
+        self.password = password
+        self.temporary = temporary
+        self._password_user = password_user
         self.modules = tuple(modules)
         self.admin = admin
         self._signed_in = signed_in
@@ -36,6 +40,29 @@ class FakeAccess:
     def sign_in_with_code(self, on_code):
         on_code("Go to https://microsoft.com/devicelogin and enter TEST-CODE")
         return self.sign_in()
+
+    def sign_in_with_password(self, email, password, new_password=None):
+        from suite_services.access.session import WRONG_PASSWORD, AccessDenied, PasswordChangeRequired
+        self.calls.append(("password", email, bool(new_password)))
+        if self.password is None or password != self.password:
+            raise AccessDenied(WRONG_PASSWORD)
+        if self.temporary and not new_password:
+            raise PasswordChangeRequired("This is a temporary password. Choose your own password to finish signing in.")
+        if new_password:
+            self.password, self.temporary = new_password, False
+        self._signed_in = self._password_user = True
+        return self
+
+    def change_password(self, old_password, new_password):
+        from suite_services.access.session import AccessDenied
+        self.calls.append(("change_password",))
+        if old_password != self.password:
+            raise AccessDenied("Your current password is not correct.")
+        self.password = new_password
+
+    @property
+    def password_user(self):
+        return self._signed_in and self._password_user
 
     def refresh(self):
         self.calls.append(("refresh",))

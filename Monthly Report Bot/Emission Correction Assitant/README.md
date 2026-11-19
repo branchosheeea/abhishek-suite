@@ -152,7 +152,8 @@ The desktop integration is tested from the suite (`tests/test_emissions_launcher
   the originals are protected by the application (insert-only code, hashes verified before and after every
   run), not by the database. Least-privilege users make it database-enforced, and the Storage integrity
   page shows which mode is in effect.
-- **Open it from NeraVeda.** People sign in to NeraVeda with their Microsoft work account. The app then
+- **Open it from NeraVeda.** People sign in to NeraVeda with their Microsoft work account or a NeraVeda ID
+  and password. The app then
   accepts API requests only with the session NeraVeda opens the browser with, and only for people who have
   this workspace. Opening `http://localhost:3001` directly shows "Open from NeraVeda". Audit records the
   signed-in email. Requests are also guarded: local host only, no cross-site requests, and a CSRF header on

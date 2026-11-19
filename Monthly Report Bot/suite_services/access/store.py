@@ -3,8 +3,10 @@
 - users: one document per person (by lower-case sign-in email); never deleted, only deactivated.
 - audit: append-only record of every change, with the authenticated database user (cannot be faked by edited code).
 - meta:  {_id: "policy"} session and offline limits.
-Every PC reads with a read-only credential; only admin PCs hold a credential that can write (and none can delete),
-enforced by Atlas custom roles. MemoryAccessStore has the same behaviour for tests.
+- password_changes: people's own password changes, each signed with their previous password (passwords.py).
+Every PC reads with a read-only credential that may also add password changes (insert only); only admin PCs hold a
+credential that can change people and rights (and none can delete), enforced by Atlas custom roles.
+MemoryAccessStore has the same behaviour for tests.
 """
 from __future__ import annotations
 
@@ -45,6 +47,36 @@ def client_info() -> dict:
     return {"host": host, "windows_user": actor_module.windows_user(), "app_version": APP_VERSION}
 
 
+def summarise_privileges(privileges: list[dict], db_name: str, user: str | None) -> dict:
+    """What a credential can do on the access list, from connectionStatus showPrivileges."""
+    def actions_on(collection: str) -> set[str]:
+        found: set[str] = set()
+        for p in privileges:
+            res = p.get("resource") or {}
+            if res.get("anyResource") or res.get("cluster"):
+                found |= set(p.get("actions") or []) if res.get("anyResource") else set()
+                continue
+            if res.get("db") in (db_name, "") and res.get("collection") in (collection, ""):
+                found |= set(p.get("actions") or [])
+        return found
+
+    users_actions, audit_actions, change_actions = actions_on("users"), actions_on("audit"), actions_on("password_changes")
+    can_write = bool({"insert", "update"} & users_actions)
+    # Rewriting or removing password changes could undo someone's own change, so it counts as removing.
+    can_remove = bool({"remove", "dropCollection", "dropDatabase"} & (users_actions | audit_actions | change_actions)) or "update" in change_actions
+    audit_insert_only = "insert" in audit_actions and not ({"update", "remove"} & audit_actions)
+    password_changes = "insert" in change_actions
+    if not can_write and not can_remove:
+        summary = "read-only for people and rights (enforced by the database); " + (
+            "can record people's own password changes" if password_changes else "cannot record password changes (people cannot change their own password)")
+    elif can_write and not can_remove and audit_insert_only:
+        summary = "admin: can add and change people; cannot delete; audit is insert-only"
+    else:
+        summary = "WARNING: this credential can delete or rewrite access records — use the least-privilege roles"
+    return {"user": user, "can_write": can_write, "can_remove": can_remove, "audit_insert_only": audit_insert_only,
+            "password_changes": password_changes, "summary": summary}
+
+
 def apply_dns_override(servers) -> None:
     """Use these DNS servers for MongoDB SRV lookups (the office DNS does not resolve Atlas SRV records)."""
     servers = [s for s in (servers or []) if s]
@@ -67,6 +99,12 @@ class _Base:
     def get_user(self, email: str) -> UserAccess | None:
         return self._find(normalise_email(email))
 
+    def password_changes(self, email: str) -> list[dict]:
+        raise NotImplementedError
+
+    def add_password_change(self, record: dict) -> None:
+        raise NotImplementedError
+
     def list_users(self) -> list[UserAccess]:
         return sorted(self._users(), key=lambda u: (not u.active, u.email))
 
@@ -88,10 +126,11 @@ class _Base:
                  "changes": changes, "reason": (reason or "")[:500], "client": client_info()}
         return self._write(before, after, expected_rev, audit)
 
-    def bootstrap_admin(self, email: str, name: str, by: dict | None = None) -> UserAccess:
+    def bootstrap_admin(self, email: str, name: str, by: dict | None = None, password: dict | None = None) -> UserAccess:
+        """The first admin, with every workspace; `password` (passwords.base_record) for sign-in without Microsoft."""
         if any(u.admin and u.active for u in self._users()):
             raise AccessStoreError("An admin already exists; add people from the Admin screen instead.")
-        person = UserAccess(email=normalise_email(email), name=name, active=True, admin=True).with_modules(MODULES)
+        person = replace(UserAccess(email=normalise_email(email), name=name, active=True, admin=True).with_modules(MODULES), password=password)
         by = by or {"email": person.email, "oid": None, "name": name}
         existing = self._find(person.email)
         saved = self.save_user(by, replace(person, rev=existing.rev if existing else 0), existing.rev if existing else None, "bootstrap: first admin")
@@ -103,6 +142,7 @@ class MemoryAccessStore(_Base):
         self.db_user = db_user
         self.users: dict[str, UserAccess] = {u.email: u for u in (users or [])}
         self.audit_log: list[dict] = []
+        self.changes: list[dict] = []
         self.meta = {"_id": "policy", **DEFAULT_POLICY}
 
     def _users(self):
@@ -110,6 +150,12 @@ class MemoryAccessStore(_Base):
 
     def _find(self, email):
         return self.users.get(email)
+
+    def password_changes(self, email):
+        return [dict(c) for c in self.changes if c.get("email") == email]
+
+    def add_password_change(self, record):
+        self.changes.append(dict(record))
 
     def _write(self, before, after, expected_rev, audit):
         saved = replace(after, rev=(before.rev + 1) if before else 1)
@@ -125,7 +171,8 @@ class MemoryAccessStore(_Base):
         return dict(self.meta)
 
     def privileges(self) -> dict:
-        return {"user": self.db_user, "can_write": True, "can_remove": False, "audit_insert_only": True, "summary": "memory store (tests)"}
+        return {"user": self.db_user, "can_write": True, "can_remove": False, "audit_insert_only": True, "password_changes": True,
+                "summary": "memory store (tests)"}
 
     def ensure_indexes(self) -> None:
         pass
@@ -167,6 +214,13 @@ class AccessStore(_Base):
         doc = self._db.users.find_one({"email": email}, {"_id": 0})
         return from_document(doc) if doc else None
 
+    def password_changes(self, email):
+        from suite_services.access.passwords import MAX_CHAIN
+        return list(self._db.password_changes.find({"email": email}, {"_id": 0}).limit(MAX_CHAIN * 4))
+
+    def add_password_change(self, record):
+        self._db.password_changes.insert_one(dict(record))
+
     def _write(self, before, after, expected_rev, audit):
         stamp, by = audit["at"], audit["actor"].get("email")
         doc = to_document(after)
@@ -198,38 +252,18 @@ class AccessStore(_Base):
         self._db.users.create_index("oid", unique=True, name="oid_unique", partialFilterExpression={"oid": {"$type": "string"}})
         self._db.audit.create_index([("target", 1), ("at", -1)], name="target_at")
         self._db.audit.create_index([("at", -1)], name="at")
+        # Not unique: a planted record with the same number must never block someone's real change.
+        self._db.password_changes.create_index([("email", 1), ("epoch", 1), ("seq", 1)], name="email_epoch_seq")
         if self._db.meta.find_one({"_id": "policy"}) is None:
             self._db.meta.insert_one({"_id": "policy", **DEFAULT_POLICY, "rev": 1, "updated_at": now_iso(), "updated_by": "bootstrap"})
 
-    def bootstrap_admin(self, email, name, by=None):
+    def bootstrap_admin(self, email, name, by=None, password=None):
         self.ensure_indexes()
-        return super().bootstrap_admin(email, name, by)
+        return super().bootstrap_admin(email, name, by, password)
 
     def privileges(self) -> dict:
         """What this credential can do, as reported by the database (not as the code assumes)."""
         status = self._db.command({"connectionStatus": 1, "showPrivileges": True})
         info = status.get("authInfo") or {}
         users = info.get("authenticatedUsers") or []
-        privileges = info.get("authenticatedUserPrivileges") or []
-        name = self._db.name
-
-        def actions_on(collection: str) -> set[str]:
-            found: set[str] = set()
-            for p in privileges:
-                res = p.get("resource") or {}
-                if res.get("anyResource") or res.get("cluster"):
-                    found |= set(p.get("actions") or []) if res.get("anyResource") else set()
-                    continue
-                if res.get("db") in (name, "") and res.get("collection") in (collection, ""):
-                    found |= set(p.get("actions") or [])
-            return found
-
-        users_actions, audit_actions = actions_on("users"), actions_on("audit")
-        can_write = bool({"insert", "update"} & users_actions)
-        can_remove = bool({"remove", "dropCollection", "dropDatabase"} & (users_actions | audit_actions))
-        audit_insert_only = "insert" in audit_actions and not ({"update", "remove"} & audit_actions)
-        summary = ("read-only (enforced by the database)" if not can_write and not can_remove
-                   else "admin: can add and change people; cannot delete; audit is insert-only" if can_write and not can_remove and audit_insert_only
-                   else "WARNING: this credential can delete or rewrite access records — use the least-privilege roles")
-        return {"user": users[0]["user"] if users else None, "can_write": can_write, "can_remove": can_remove,
-                "audit_insert_only": audit_insert_only, "summary": summary}
+        return summarise_privileges(info.get("authenticatedUserPrivileges") or [], self._db.name, users[0]["user"] if users else None)

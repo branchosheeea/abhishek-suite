@@ -44,7 +44,7 @@ Return paths: the sidebar (or the top bar on narrow screens) links to Home and e
 
 **Storage stays where it was:** browser IndexedDB stores `sir-reports` / `sir-photos` for the `http://localhost:3000` origin, plus MongoDB database `inspections` (collections `reports`, `photos`). The route move changed no data, so no migration is needed. The service worker cache was renamed to `neraveda-shell-v3`; the old `sir-shell-v2` cache is removed automatically.
 
-**Sign-in:** people sign in to NeraVeda with their Microsoft work account, and the server only listens on `127.0.0.1`.
+**Sign-in:** people sign in to NeraVeda with their Microsoft work account or a NeraVeda ID and password, and the server only listens on `127.0.0.1`.
 - Every API route except health needs the session NeraVeda opens the browser with: an HttpOnly `neraveda_sir` cookie, valid 12 h, for people who have this workspace.
 - Without it, the app shows "Open from NeraVeda". Drafts already in the browser stay there, and a failed load never creates an empty draft over a report.
 - Without network, the app shows an offline banner and keeps working on browser drafts.

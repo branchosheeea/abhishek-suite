@@ -59,6 +59,8 @@ class UserAccess:
     note: str = ""
     rev: int = 0
     meta: dict = field(default_factory=dict, compare=False)
+    #: NeraVeda password set by an admin (passwords.base_record), or None: Microsoft sign-in only
+    password: dict | None = field(default=None, compare=False)
 
     @property
     def modules(self) -> tuple[str, ...]:
@@ -93,7 +95,15 @@ def from_document(doc: dict) -> UserAccess:
         note=str(doc.get("note") or ""),
         rev=int(doc.get("rev") or 0),
         meta={k: doc.get(k) for k in ("created_at", "created_by", "updated_at", "updated_by") if k in doc},
+        password=_password(doc.get("password")),
     )
+
+
+def _password(value) -> dict | None:
+    """A well-formed password record, else None (a malformed record never allows a sign-in)."""
+    if not isinstance(value, dict) or not isinstance(value.get("verifier"), dict) or not value["verifier"].get("pub"):
+        return None
+    return dict(value)
 
 
 def to_document(access: UserAccess) -> dict:
@@ -105,15 +115,25 @@ def to_document(access: UserAccess) -> dict:
         "grants": [g.to_document() for g in access.grants],
         "oid": access.oid,
         "note": access.note,
+        "password": access.password,
         "v": 1,
     }
+
+
+def password_state(access: UserAccess | None) -> dict | None:
+    """What the audit records about a password: never the verifier."""
+    if access is None or not access.password:
+        return None
+    return {"epoch": access.password.get("epoch", 0), "temporary": bool(access.password.get("temporary")),
+            "set_at": access.password.get("set_at"), "set_by": access.password.get("set_by")}
 
 
 def snapshot(access: UserAccess | None) -> dict | None:
     """The part of a person's rights recorded in the audit (before / after)."""
     if access is None:
         return None
-    return {"active": access.active, "admin": access.admin, "grants": [g.to_document() for g in access.grants]}
+    return {"active": access.active, "admin": access.admin, "grants": [g.to_document() for g in access.grants],
+            "password": password_state(access)}
 
 
 def diff(before: UserAccess | None, after: UserAccess) -> list[str]:
@@ -131,6 +151,11 @@ def diff(before: UserAccess | None, after: UserAccess) -> list[str]:
         out.append("name")
     if before is not None and before.oid != after.oid:
         out.append("oid")
+    old_pw, new_pw = password_state(before), password_state(after)
+    if new_pw and (not old_pw or old_pw["epoch"] != new_pw["epoch"]):
+        out.append("password:temporary" if new_pw["temporary"] else "password:set")
+    elif old_pw and not new_pw:
+        out.append("password:removed")
     return out
 
 

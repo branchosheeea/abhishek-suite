@@ -40,7 +40,13 @@ class AccessConfig:
 
     @property
     def configured(self) -> bool:
-        return bool(self.tenant_id and self.client_id and self.reader_uri)
+        """Sign-in is set up: the access list can be read. Microsoft sign-in is optional on top (see `microsoft`)."""
+        return bool(self.reader_uri)
+
+    @property
+    def microsoft(self) -> bool:
+        """Microsoft sign-in is available on this PC (IT's app registration entered)."""
+        return bool(self.configured and self.tenant_id and self.client_id)
 
     @property
     def local_mode(self) -> bool:
@@ -83,18 +89,22 @@ def load_config(env=None) -> AccessConfig:
     )
 
 
-def validate_settings(tenant_id: str, client_id: str) -> None:
+def validate_settings(tenant_id: str | None, client_id: str | None) -> None:
+    """Both IDs, or neither (then this PC offers NeraVeda password sign-in only)."""
+    if not tenant_id and not client_id:
+        return
     for label, value in (("Tenant ID", tenant_id), ("Client ID", client_id)):
         if not GUID.match(value or ""):
-            raise ValueError(f"{label} must be a GUID such as 00000000-0000-0000-0000-000000000000.")
+            raise ValueError(f"{label} must be a GUID such as 00000000-0000-0000-0000-000000000000 (or leave both empty).")
 
 
-def save_settings(tenant_id: str, client_id: str, dns_servers: list[str] | tuple[str, ...] = (), db_name: str = "neraveda_access") -> Path:
+def save_settings(tenant_id: str | None, client_id: str | None, dns_servers: list[str] | tuple[str, ...] = (), db_name: str = "neraveda_access") -> Path:
     validate_settings(tenant_id, client_id)
     path = access_dir() / "config.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"tenant_id": tenant_id, "client_id": client_id, "dns_servers": list(dns_servers), "db_name": db_name}, indent=2), encoding="utf-8")
+    temporary.write_text(json.dumps({"tenant_id": tenant_id or None, "client_id": client_id or None, "dns_servers": list(dns_servers),
+                                     "db_name": db_name}, indent=2), encoding="utf-8")
     os.replace(temporary, path)
     return path
 

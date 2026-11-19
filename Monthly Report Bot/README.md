@@ -18,7 +18,7 @@ python abhishek_automation_suite.py
 
 ### Sign-in and access rights
 
-People sign in with their Microsoft work account, and an admin chooses which workspaces each person may use (**Admin**, top right). Workspaces a person may not use are hidden from the home page, the sidebar and Requires Attention.
+People sign in with a NeraVeda ID (their work email) and password, or with their Microsoft work account once IT has registered the app. An admin chooses which workspaces each person may use, and gives out temporary passwords (**Admin**, top right). Workspaces a person may not use are hidden from the home page, the sidebar and Requires Attention.
 - Desktop workspaces started directly (e.g. `python -m lube_oil`) open only with a NeraVeda session that includes them.
 - The web workspaces (06, 07) accept requests only from the browser NeraVeda opened, with that person's session.
 - Until a PC is set up, NeraVeda runs in **local mode**: the Windows user, with every workspace, as before.

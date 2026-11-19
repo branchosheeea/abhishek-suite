@@ -13,7 +13,7 @@ from pathlib import Path
 from suite_services import actor
 from suite_services.access.config import load_config
 from suite_services.access.entitlements import MODULE_TITLES
-from suite_services.access.session import SessionStore
+from suite_services.access.session import SIGNED_IN_MODES, SessionStore
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MB_OK, MB_YESNO, MB_ICONINFORMATION, IDYES = 0x0, 0x4, 0x40, 6
@@ -44,7 +44,7 @@ def check_module(key: str, now: float | None = None) -> tuple[bool, str]:
         return True, "local mode"
     session = SessionStore().load()
     current = time.time() if now is None else now
-    if session is None or session.mode != "entra" or not session.valid(current):
+    if session is None or session.mode not in SIGNED_IN_MODES or not session.valid(current):
         return False, "signed-out"
     if key not in session.modules:
         return False, "no-access"

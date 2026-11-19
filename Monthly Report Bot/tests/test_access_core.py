@@ -14,20 +14,37 @@ from unittest.mock import patch
 from abhishek_automation_suite import TITLES, WORKSPACES
 from suite_services import actor, home_intelligence
 from suite_services.access import config as cfg
-from suite_services.access import guard, tickets
+from suite_services.access import guard, passwords, tickets
 from suite_services.access.config import AccessConfig
 from suite_services.access.entitlements import (
-    MODULE_TITLES, MODULES, Grant, UserAccess, allows, diff, from_document, normalise_email, to_document, would_leave_no_admin,
+    MODULE_TITLES, MODULES, Grant, UserAccess, allows, diff, from_document, normalise_email, snapshot, to_document,
+    would_leave_no_admin,
 )
-from suite_services.access.session import AccessDenied, AccessService, NotSetUp, Session, SessionExpired, SessionStore
+from suite_services.access.session import (
+    WRONG_PASSWORD, AccessDenied, AccessService, NotSetUp, PasswordChangeRequired, PasswordRejected, Session, SessionExpired,
+    SessionStore, TooManyAttempts,
+)
 from suite_services.access.signin import EntraSignIn, Identity, SignInError
-from suite_services.access.store import ConflictError, LastAdminError, MemoryAccessStore
+from suite_services.access.store import ConflictError, LastAdminError, MemoryAccessStore, summarise_privileges
 
 ROOT = Path(__file__).resolve().parents[1]
 TENANT = "11111111-2222-3333-4444-555555555555"
 CLIENT = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 ENTRA = AccessConfig(tenant_id=TENANT, client_id=CLIENT, reader_uri="mongodb://reader", admin_uri="mongodb://admin")
+PASSWORD_ONLY = AccessConfig(reader_uri="mongodb://reader")  # a PC without IT's Microsoft registration
 SECRET = "f" * 64
+FAST = {"n": 2 ** 14, "r": 8, "p": 1}  # the lowest accepted scrypt cost keeps the tests quick
+
+
+class FastPasswords:
+    def setUp(self):
+        super().setUp()
+        self._cost = patch.dict(passwords.COST, FAST)
+        self._cost.start()
+
+    def tearDown(self):
+        self._cost.stop()
+        super().tearDown()
 
 
 class TempRuntime(unittest.TestCase):
@@ -80,6 +97,64 @@ class EntitlementTests(unittest.TestCase):
         self.assertTrue(would_leave_no_admin([admin], replace(admin, active=False)))
         self.assertFalse(would_leave_no_admin([admin, UserAccess("two@x.com", admin=True)], replace(admin, admin=False)))
 
+    def test_passwords_are_audited_by_state_never_by_value(self):
+        record = {"verifier": {"pub": "PUBLIC-KEY", "salt": "SALT"}, "epoch": 1, "temporary": True,
+                  "set_at": "2026-11-19T10:00:00Z", "set_by": "boss@x.com"}
+        before = UserAccess("a@x.com")
+        after = replace(before, password=record)
+        self.assertEqual(diff(before, after), ["password:temporary"])
+        self.assertEqual(diff(after, replace(after, password={**record, "epoch": 2})), ["password:temporary"])
+        self.assertEqual(diff(after, replace(after, password=None)), ["password:removed"])
+        self.assertEqual(diff(after, replace(after, name="")), [])  # unchanged password, no entry
+        self.assertNotIn("PUBLIC-KEY", json.dumps(snapshot(after)))
+        self.assertTrue(snapshot(after)["password"]["temporary"])
+        self.assertEqual(from_document(to_document(after)).password["epoch"], 1)
+        self.assertIsNone(from_document({**to_document(after), "password": {"junk": 1}}).password)
+
+
+class PasswordTests(FastPasswords, unittest.TestCase):
+    def test_verifier_checks_the_password_and_holds_none_of_it(self):
+        verifier, _key = passwords.new_verifier("correct horse battery")
+        self.assertIsNotNone(passwords.matches("correct horse battery", verifier))
+        self.assertIsNone(passwords.matches("correct horse batterz", verifier))
+        self.assertIsNone(passwords.matches("", verifier))
+        self.assertEqual(set(verifier), {"alg", "n", "r", "p", "salt", "pub"})
+        self.assertNotIn("horse", json.dumps(verifier))
+        self.assertNotEqual(passwords.new_verifier("correct horse battery")[0]["pub"], verifier["pub"])  # salted
+        self.assertFalse(passwords.valid_verifier({**verifier, "n": 2 ** 22}))  # a planted record cannot demand huge memory
+
+    def test_rules_and_temporary_passwords(self):
+        self.assertTrue(passwords.problems("short"))
+        self.assertIn("Do not include your ID in the password.", passwords.problems("alice-is-great-2026", "alice@x.com"))
+        self.assertTrue(passwords.problems("aaaaaaaaaaaaaaaa"))
+        self.assertTrue(passwords.problems("Password1234"))
+        self.assertEqual(passwords.problems("Harbour lights 42!", "alice@x.com"), [])
+        temporary = passwords.generate_temporary()
+        self.assertRegex(temporary, r"^[A-Za-z2-9]{4}(-[A-Za-z2-9]{4}){3}$")
+        self.assertEqual(passwords.problems(temporary, "alice@x.com"), [])
+
+    def test_only_a_change_signed_with_the_current_password_counts(self):
+        v1, k1 = passwords.new_verifier("first password 1")
+        base = passwords.base_record(v1, temporary=True, epoch=1, set_by="boss@x.com")
+        current = passwords.resolve("alice@x.com", base)
+        self.assertTrue(current.temporary)
+        v2, k2 = passwords.new_verifier("second password 2")
+        change = passwords.change_record("alice@x.com", current, k1, v2)
+        # Someone with database access plants their own password for Alice, signed with their own key.
+        vx, kx = passwords.new_verifier("attacker password")
+        planted = passwords.change_record("alice@x.com", current, kx, vx)
+        resolved = passwords.resolve("alice@x.com", base, [planted, change])
+        self.assertEqual((resolved.verifier["pub"], resolved.temporary, resolved.seq), (v2["pub"], False, 1))
+        # Replaying the first change after a second one changes nothing.
+        v3, _k3 = passwords.new_verifier("third password 3")
+        change2 = passwords.change_record("alice@x.com", resolved, k2, v3)
+        self.assertEqual(passwords.resolve("alice@x.com", base, [change, change2, dict(change)]).verifier["pub"], v3["pub"])
+        # A record edited after signing, one for another person, or one from before an admin reset is ignored.
+        self.assertEqual(passwords.resolve("alice@x.com", base, [{**change, "verifier": vx}]).seq, 0)
+        self.assertEqual(passwords.resolve("bob@x.com", base, [change]).seq, 0)
+        reset = passwords.base_record(v1, temporary=True, epoch=2, set_by="boss@x.com")
+        self.assertEqual(passwords.resolve("alice@x.com", reset, [change, change2]).seq, 0)
+
 
 class TicketTests(unittest.TestCase):
     def test_round_trip_expiry_audience_and_tampering(self):
@@ -127,6 +202,30 @@ class StoreTests(unittest.TestCase):
         latest = store.audit(target="alice@x.com")[0]
         self.assertEqual((latest["action"], latest["changes"], latest["db_user"]), ("user.update", ["+evi"], "neraveda_access_admin_test"))
         self.assertEqual(store.audit()[-1]["action"], "user.create")
+
+    def test_permission_summary_for_reader_admin_and_too_broad_credentials(self):
+        def p(collection, *actions):
+            return {"resource": {"db": "neraveda_access", "collection": collection}, "actions": list(actions)}
+        reader = summarise_privileges([p("users", "find"), p("meta", "find"), p("password_changes", "find", "insert")], "neraveda_access", "ro")
+        self.assertEqual((reader["can_write"], reader["can_remove"], reader["password_changes"]), (False, False, True))
+        self.assertIn("read-only for people and rights", reader["summary"])
+        admin = summarise_privileges([p("users", "find", "insert", "update"), p("meta", "find", "insert", "update"),
+                                      p("audit", "find", "insert"), p("password_changes", "find", "insert")], "neraveda_access", "adm")
+        self.assertIn("admin:", admin["summary"])
+        broad = summarise_privileges([p("users", "find"), p("password_changes", "find", "insert", "update")], "neraveda_access", "x")
+        self.assertTrue(broad["can_remove"])  # rewriting password changes could undo someone's own change
+        self.assertIn("WARNING", broad["summary"])
+
+
+class ConfigTests(TempRuntime):
+    def test_a_pc_can_be_set_up_without_microsoft(self):
+        cfg.save_settings(None, None, ["8.8.8.8"])
+        cfg.save_secret("reader_uri", "mongodb://reader")
+        c = cfg.load_config({})
+        self.assertEqual((c.configured, c.microsoft, c.local_mode), (True, False, False))
+        self.assertRaises(ValueError, cfg.save_settings, TENANT, None)  # both IDs or neither
+        cfg.save_settings(TENANT, CLIENT)
+        self.assertTrue(cfg.load_config({}).microsoft)
 
 
 class FakeSignIn:
@@ -257,6 +356,117 @@ class SessionTests(TempRuntime):
         self.assertEqual(actor.current_actor(), actor.windows_user())
 
 
+class PasswordSessionTests(FastPasswords, TempRuntime):
+    def setUp(self):
+        super().setUp()
+        self.now = [1_000_000.0]
+
+    def person(self, email="alice@x.com", password="Temp-Pass-1234", temporary=True, **fields):
+        verifier, _key = passwords.new_verifier(password)
+        return replace(UserAccess(email, "Alice", **fields).with_modules(["oil"]),
+                       password=passwords.base_record(verifier, temporary=temporary, epoch=1, set_by="boss@x.com"))
+
+    def service(self, store, config=PASSWORD_ONLY):
+        return AccessService(config, store_factory=lambda uri: store, sessions=SessionStore(), clock=lambda: self.now[0])
+
+    def test_a_pc_without_microsoft_offers_password_sign_in_only(self):
+        access = self.service(MemoryAccessStore())
+        self.assertEqual(access.signin_methods, {"microsoft": False, "password": True})
+        self.assertFalse(access.local_mode)
+        self.assertIsNone(access.try_silent())
+        self.assertRaisesRegex(NotSetUp, "Microsoft sign-in is not set up", access.sign_in)
+        self.assertEqual(AccessService(ENTRA, sessions=SessionStore()).signin_methods, {"microsoft": True, "password": True})
+        self.assertRaises(NotSetUp, AccessService(AccessConfig(required=False), sessions=SessionStore()).sign_in_with_password, "a@x.com", "x")
+
+    def test_a_temporary_password_must_be_replaced_then_only_the_new_one_works(self):
+        store = MemoryAccessStore([self.person()])
+        access = self.service(store)
+        with self.assertRaises(PasswordChangeRequired):
+            access.sign_in_with_password("Alice@X.com", "Temp-Pass-1234")
+        self.assertIsNone(SessionStore().load())  # no session until the person has chosen a password
+        with self.assertRaisesRegex(PasswordRejected, "at least 12"):
+            access.sign_in_with_password("alice@x.com", "Temp-Pass-1234", "short")
+        with self.assertRaisesRegex(PasswordRejected, "different"):
+            access.sign_in_with_password("alice@x.com", "Temp-Pass-1234", "Temp-Pass-1234")
+        session = access.sign_in_with_password("alice@x.com", "Temp-Pass-1234", "Harbour lights 42!")
+        self.assertEqual((session.mode, session.modules), ("password", ("oil",)))
+        self.assertTrue(access.password_user and access.allows("oil") and not access.is_admin)
+        self.assertEqual(actor.current_actor(), "alice@x.com")
+        self.assertEqual((len(store.changes), store.audit_log), (1, []))  # the person's own change needs no admin write
+        again = self.service(store)
+        with self.assertRaisesRegex(AccessDenied, "not correct"):
+            again.sign_in_with_password("alice@x.com", "Temp-Pass-1234")
+        self.assertEqual(again.sign_in_with_password("alice@x.com", "Harbour lights 42!").email, "alice@x.com")
+        self.assertEqual(self.service(store).cached().mode, "password")  # the next start uses the stored session
+
+    def test_unknown_id_and_wrong_password_get_the_same_answer_and_attempts_are_limited(self):
+        store = MemoryAccessStore([self.person(temporary=False), UserAccess("microsoft-only@x.com")])
+        access = self.service(store)
+        for email, password in (("nobody@x.com", "x"), ("microsoft-only@x.com", "x"), ("alice@x.com", "wrong"),
+                                ("not an id", "x"), ("alice@x.com", "wrong again")):
+            with self.assertRaises(AccessDenied) as caught:
+                access.sign_in_with_password(email, password)
+            self.assertEqual(str(caught.exception), WRONG_PASSWORD)
+        with self.assertRaisesRegex(TooManyAttempts, "Try again in 60 seconds"):
+            access.sign_in_with_password("alice@x.com", "Temp-Pass-1234")
+        self.now[0] += 61
+        self.assertEqual(access.sign_in_with_password("alice@x.com", "Temp-Pass-1234").mode, "password")
+
+    def test_a_deactivated_person_is_told_only_after_the_right_password(self):
+        store = MemoryAccessStore([self.person(temporary=False, active=False)])
+        with self.assertRaisesRegex(AccessDenied, "deactivated"):
+            self.service(store).sign_in_with_password("alice@x.com", "Temp-Pass-1234")
+        with self.assertRaisesRegex(AccessDenied, "not correct"):
+            self.service(store).sign_in_with_password("alice@x.com", "wrong")
+
+    def test_an_admin_reset_or_removal_ends_the_session_at_the_next_check(self):
+        store = MemoryAccessStore([self.person(temporary=False)])
+        access = self.service(store)
+        access.sign_in_with_password("alice@x.com", "Temp-Pass-1234")
+        access.refresh()
+        self.assertTrue(access.signed_in)
+        verifier, _key = passwords.new_verifier("New-Temp-5678x")
+        store.users["alice@x.com"] = replace(store.users["alice@x.com"], password=passwords.base_record(verifier, temporary=True, epoch=2, set_by="boss@x.com"))
+        with self.assertRaisesRegex(SessionExpired, "changed or reset"):
+            access.refresh()
+        self.assertIsNone(SessionStore().load())
+        access.sign_in_with_password("alice@x.com", "New-Temp-5678x", "Harbour lights 42!")
+        store.users["alice@x.com"] = replace(store.users["alice@x.com"], password=None)
+        with self.assertRaisesRegex(AccessDenied, "removed"):
+            access.refresh()
+
+    def test_changing_the_password_needs_the_current_one(self):
+        store = MemoryAccessStore([self.person(temporary=False)])
+        access = self.service(store)
+        access.sign_in_with_password("alice@x.com", "Temp-Pass-1234")
+        with self.assertRaisesRegex(AccessDenied, "current password"):
+            access.change_password("wrong", "Harbour lights 42!")
+        access.change_password("Temp-Pass-1234", "Harbour lights 42!")
+        access.refresh()  # this PC's session follows its own change
+        self.assertTrue(access.signed_in)
+        self.assertEqual(self.service(store).sign_in_with_password("alice@x.com", "Harbour lights 42!").mode, "password")
+
+    def test_a_planted_change_does_not_let_someone_else_in(self):
+        store = MemoryAccessStore([self.person(temporary=False)])
+        current = passwords.resolve("alice@x.com", store.users["alice@x.com"].password)
+        verifier, key = passwords.new_verifier("attacker chosen pw")
+        store.add_password_change(passwords.change_record("alice@x.com", current, key, verifier))
+        with self.assertRaises(AccessDenied):
+            self.service(store).sign_in_with_password("alice@x.com", "attacker chosen pw")
+        self.assertEqual(self.service(store).sign_in_with_password("alice@x.com", "Temp-Pass-1234").mode, "password")
+
+    def test_password_admins_administer_and_get_admin_tickets(self):
+        store = MemoryAccessStore([replace(self.person(temporary=False), admin=True)])
+        access = self.service(store, AccessConfig(reader_uri="mongodb://reader", admin_uri="mongodb://admin"))
+        access.sign_in_with_password("alice@x.com", "Temp-Pass-1234")
+        self.assertTrue(access.is_admin and access.can_administer)
+        secret = access.web_secret("sir", rotate=True)
+        claims = tickets.verify(secret, access.service_headers("sir")["x-neraveda-service"], "service", "sir", now=self.now[0])
+        self.assertTrue(claims["adm"])
+        access.sign_out()  # no Microsoft call for a password session
+        self.assertIsNone(SessionStore().load())
+
+
 class FakeMsalApp:
     def __init__(self, client_id, **kwargs):
         self.client_id, self.kwargs = client_id, kwargs
@@ -307,6 +517,33 @@ class SignInTests(TempRuntime):
         self.assertRaises(SignInError, EntraSignIn, AccessConfig())
 
 
+class SecureStoreTests(TempRuntime):
+    def test_round_trip_and_purpose_binding(self):
+        from suite_services import secure_store
+        path = Path(self._tmp.name) / "x.bin"
+        secure_store.write_protected(path, b"secret value", "web sir")
+        self.assertNotIn(b"secret value", path.read_bytes())
+        self.assertEqual(secure_store.read_protected(path, "web sir"), b"secret value")
+        self.assertIsNone(secure_store.read_protected(path, "web evi"))  # another purpose cannot unlock it
+        self.assertEqual(secure_store.unprotect(secure_store.protect(b"", "empty"), "empty"), b"")
+
+    def test_needs_no_extra_package(self):
+        # The NeraVeda shortcut runs on the installed Python, which may not have pywin32.
+        from suite_services import secure_store
+        self.assertNotIn("import win32crypt", Path(secure_store.__file__).read_text(encoding="utf-8"))
+
+    def test_files_written_with_pywin32_still_open_and_vice_versa(self):
+        try:
+            import win32crypt
+        except ImportError:
+            self.skipTest("pywin32 not installed")
+        from suite_services import secure_store
+        old = win32crypt.CryptProtectData(b"from before", "NeraVeda session", b"session", None, None, 0)
+        self.assertEqual(secure_store.unprotect(old, "session"), b"from before")
+        _description, clear = win32crypt.CryptUnprotectData(secure_store.protect(b"new", "session"), b"session", None, None, 0)
+        self.assertEqual(clear, b"new")
+
+
 class GuardTests(TempRuntime):
     def save(self, **overrides):
         base = dict(email="alice@x.com", name="Alice", oid=None, admin=False, modules=("oil",), mode="entra", signed_in_at=time.time(), verified_at=time.time())
@@ -324,6 +561,10 @@ class GuardTests(TempRuntime):
             self.assertEqual(actor.current_actor(), "alice@x.com")
             self.assertEqual(guard.check_module("gc"), (False, "no-access"))
             self.save(signed_in_at=time.time() - 13 * 3600)
+            self.assertEqual(guard.check_module("oil"), (False, "signed-out"))
+            self.save(mode="password")  # signed in with a NeraVeda password
+            self.assertEqual(guard.check_module("oil"), (True, "alice@x.com"))
+            self.save(mode="local")  # a local-mode session file never opens a workspace once sign-in is set up
             self.assertEqual(guard.check_module("oil"), (False, "signed-out"))
 
     def test_refusal_explains_and_exits(self):

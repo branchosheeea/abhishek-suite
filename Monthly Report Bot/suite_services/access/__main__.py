@@ -1,10 +1,13 @@
 """NeraVeda access set-up and checks:  python -m suite_services.access <command>
 
-  setup [--admin]        store this PC's sign-in settings (tenant, client, DNS) and the access-list connection(s)
+  setup [--admin]        store this PC's sign-in settings and the access-list connection(s); the Microsoft tenant and
+                         client IDs are optional (without them the PC offers NeraVeda ID + password sign-in only)
   secrets import         move the Inspection/Emissions database settings from the apps' .env.local into protected storage
   secrets set sir|evi    enter those database settings by hand (for a colleague's PC)
-  check                  configuration, Microsoft reachability, database permissions (prints no secrets)
-  bootstrap --email E --name N   create the first admin (admin PC only; refused once an admin exists)
+  check                  configuration, sign-in methods, database permissions (prints no secrets)
+  bootstrap --email E --name N [--password]
+                         create the first admin (admin PC only; refused once an admin exists); --password also sets
+                         your own NeraVeda password, needed when this PC has no Microsoft sign-in
   whoami                 who is signed in on this PC and to what (no tokens)
   webcheck sir|evi       end-to-end checks of a running web workspace's access control
 """
@@ -37,10 +40,17 @@ def _ask(prompt: str, secret: bool = False, default: str | None = None) -> str:
 
 def cmd_setup(args) -> int:
     current = cfg.load_config()
+    print("Microsoft sign-in needs the two IDs from IT. Press Enter to skip them: this PC then offers NeraVeda ID + password only.")
+    print("(Type - to remove IDs entered earlier.)")
     tenant = _ask("Directory (tenant) ID", default=current.tenant_id)
     client = _ask("Application (client) ID", default=current.client_id)
+    tenant, client = (None if tenant == "-" else tenant or None), (None if client == "-" else client or None)
     dns = _ask("DNS servers for MongoDB SRV lookups (comma-separated)", default=",".join(current.dns_servers) or "8.8.8.8")
-    cfg.save_settings(tenant, client, [d.strip() for d in dns.split(",") if d.strip()])
+    try:
+        cfg.save_settings(tenant, client, [d.strip() for d in dns.split(",") if d.strip()])
+    except ValueError as error:
+        print(error)
+        return 2
     reader = _ask("Access-list READ-ONLY connection string (hidden; Enter keeps the current one)", secret=True)
     if reader:
         cfg.save_secret("reader_uri", reader)
@@ -111,14 +121,27 @@ def _https_check(url: str) -> str:
         return f"NOT reachable ({error})"
 
 
+def _package(name: str) -> bool:
+    import importlib.util
+    return importlib.util.find_spec(name) is not None
+
+
 def cmd_check(_args) -> int:
-    from suite_services.access.signin import broker_available
+    from suite_services.access import passwords
     c = cfg.load_config()
+    methods = [m for m, on in (("Microsoft", c.microsoft), ("NeraVeda ID + password", c.configured)) if on]
     print(f"Policy: sign-in {'REQUIRED' if c.required else 'not required yet'} (suite_services/access/policy.json)")
-    print(f"Mode on this PC: {'local (Windows user, all workspaces)' if c.local_mode else 'Microsoft sign-in' if c.configured else 'NOT SET UP — workspaces will not open'}")
-    print(f"Tenant ID: {'set' if c.tenant_id else 'missing'} · Client ID: {'set' if c.client_id else 'missing'} · DNS: {', '.join(c.dns_servers) or 'system'}")
+    print(f"Mode on this PC: {'local (Windows user, all workspaces)' if c.local_mode else 'sign-in: ' + ' and '.join(methods) if c.configured else 'NOT SET UP — workspaces will not open'}")
+    print(f"Tenant ID: {'set' if c.tenant_id else 'not set'} · Client ID: {'set' if c.client_id else 'not set'} · DNS: {', '.join(c.dns_servers) or 'system'}")
     print(f"Access list: read-only connection {'set' if c.reader_uri else 'missing'} · admin connection {'set' if c.admin_uri else 'not on this PC'}")
-    print(f"Windows sign-in broker: {'available' if broker_available() else 'not installed (browser sign-in is used)'}")
+    print(f"This Python ({sys.executable}):")
+    print(f"  pymongo (access list): {'installed' if _package('pymongo') else 'MISSING — run: python -m pip install -r requirements.txt'}")
+    print(f"  cryptography (NeraVeda passwords): {'installed' if passwords.available() else 'MISSING — run: python -m pip install -r requirements.txt'}")
+    if c.microsoft:
+        print(f"  msal (Microsoft sign-in): {'installed' if _package('msal') else 'MISSING — run: python -m pip install -r requirements.txt'}")
+        if _package("msal"):
+            from suite_services.access.signin import broker_available
+            print(f"  Windows sign-in broker: {'available' if broker_available() else 'not installed (browser sign-in is used)'}")
     if c.tenant_id:
         print(f"Microsoft sign-in endpoint: {_https_check(f'https://login.microsoftonline.com/{urllib.parse.quote(c.tenant_id)}/v2.0/.well-known/openid-configuration')}")
     status = 0
@@ -133,6 +156,8 @@ def cmd_check(_args) -> int:
             if label == "reader" and (p["can_write"] or p["can_remove"]):
                 print("  WARNING: the read-only connection can change the access list. Use a user with the neravedaAccessRead role.")
                 status = 1
+            elif label == "reader" and not p.get("password_changes"):
+                print("  Note: add 'insert' on password_changes to the neravedaAccessRead role so people can choose their own password.")
             store.close()
         except Exception as error:
             print(f"Access list ({label}): NOT reachable — {error}")
@@ -147,10 +172,24 @@ def cmd_bootstrap(args) -> int:
     if not c.admin_uri:
         print("This PC has no admin connection. Run: python -m suite_services.access setup --admin")
         return 2
+    from suite_services.access import passwords
+    from suite_services.access.entitlements import normalise_email
     from suite_services.access.store import AccessStore
+    record = None
+    if args.password:
+        email = normalise_email(args.email)
+        password = getpass.getpass("Your NeraVeda password (hidden): ")
+        if password != getpass.getpass("Again: "):
+            print("The two passwords do not match. Nothing was changed.")
+            return 2
+        found = passwords.problems(password, email)
+        if found:
+            print("Not accepted: " + " ".join(found))
+            return 2
+        record = passwords.base_record(passwords.new_verifier(password)[0], temporary=False, epoch=1, set_by=email)
     store = AccessStore(c.admin_uri, c.db_name, c.dns_servers)
-    person = store.bootstrap_admin(args.email, args.name)
-    print(f"First admin created: {person.email} (all workspaces). Indexes and policy are in place.")
+    person = store.bootstrap_admin(args.email, args.name, password=record)
+    print(f"First admin created: {person.email} (all workspaces{', NeraVeda password set' if record else ''}). Indexes and policy are in place.")
     return 0
 
 
@@ -164,7 +203,8 @@ def cmd_whoami(_args) -> int:
         print("Nobody is signed in on this PC.")
         return 1
     left = (s.expires_at - time.time()) / 3600
-    print(f"{s.name} <{s.email}> · {'admin · ' if s.admin else ''}workspaces: {', '.join(s.modules) or 'none'}")
+    print(f"{s.name} <{s.email}> · signed in with {'Microsoft' if s.mode == 'entra' else 'NeraVeda password'} · "
+          f"{'admin · ' if s.admin else ''}workspaces: {', '.join(s.modules) or 'none'}")
     print(f"Session {'valid' if s.valid(time.time()) else 'EXPIRED'} ({left:.1f} h left) · last checked {time.strftime('%Y-%m-%d %H:%M', time.localtime(s.verified_at))}")
     return 0
 
@@ -233,6 +273,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("bootstrap")
     p.add_argument("--email", required=True)
     p.add_argument("--name", required=True)
+    p.add_argument("--password", action="store_true", help="also set your own NeraVeda password")
     p.set_defaults(func=cmd_bootstrap)
     sub.add_parser("whoami").set_defaults(func=cmd_whoami)
     p = sub.add_parser("webcheck")

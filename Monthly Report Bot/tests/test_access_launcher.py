@@ -1,4 +1,5 @@
 """The NeraVeda home screen with sign-in and per-person workspaces (FakeAccess: no Microsoft, no database)."""
+import json
 import time
 import tkinter as tk
 import unittest
@@ -6,6 +7,7 @@ from unittest.mock import patch
 
 from abhishek_automation_suite import AutomationSuite
 from suite_services import home_intelligence
+from suite_services.access import passwords
 from suite_services.access.entitlements import UserAccess
 from suite_services.access.store import MemoryAccessStore
 from suite_services.access.testing import FakeAccess
@@ -106,6 +108,59 @@ class SignInTests(unittest.TestCase):
         finally:
             app.destroy()
 
+    def test_a_pc_without_microsoft_signs_in_with_id_and_password(self):
+        access = FakeAccess(signed_in=False, methods={"microsoft": False, "password": True}, password="Right-Pass-1234")
+        app = AutomationSuite(access=access)
+        try:
+            app.update()
+            panel = app.signin_panel
+            self.assertEqual(panel.sign_in_button.winfo_manager(), "")  # no Microsoft button on this PC
+            self.assertEqual(panel.password_entry.winfo_manager(), "pack")
+            panel.id_entry.insert(0, "tester@example.com")
+            panel.password_entry.insert(0, "wrong")
+            panel._submit_password()
+            self.assertTrue(pump(app, lambda: "not correct" in panel.detail.get("1.0", "end")))
+            self.assertEqual(panel.password_entry.get(), "")  # cleared after a wrong password
+            panel.password_entry.insert(0, "Right-Pass-1234")
+            panel._submit_password()
+            self.assertTrue(pump(app, lambda: app._dashboard_built))
+            self.assertEqual(app.password_button.winfo_manager(), "pack")  # "Change password" for password users
+        finally:
+            app.destroy()
+
+    def test_a_temporary_password_asks_for_the_persons_own_first(self):
+        access = FakeAccess(signed_in=False, methods={"microsoft": True, "password": True}, password="Temp-Pass-1234", temporary=True)
+        app = AutomationSuite(access=access)
+        try:
+            app.update()
+            panel = app.signin_panel
+            self.assertEqual(panel.sign_in_button.winfo_manager(), "pack")  # both methods on this PC
+            self.assertTrue(pump(app, lambda: panel.password_button.cget("state") == "normal"))
+            panel.id_entry.insert(0, "tester@example.com")
+            panel.password_entry.insert(0, "Temp-Pass-1234")
+            panel._submit_password()
+            self.assertTrue(pump(app, lambda: panel.change_box.winfo_manager() == "pack"))
+            self.assertFalse(app._dashboard_built)
+            panel.new_entry.insert(0, "Harbour lights 42!")
+            panel.confirm_entry.insert(0, "Harbour lights 41!")
+            panel._submit_new()
+            self.assertIn("do not match", panel.status.cget("text"))
+            panel.confirm_entry.delete(0, "end")
+            panel.confirm_entry.insert(0, "Harbour lights 42!")
+            panel._submit_new()
+            self.assertTrue(pump(app, lambda: app._dashboard_built))
+            self.assertEqual(access.password, "Harbour lights 42!")
+        finally:
+            app.destroy()
+
+    def test_microsoft_users_see_no_change_password(self):
+        app = AutomationSuite(access=FakeAccess())
+        try:
+            app.update()
+            self.assertEqual(app.password_button.winfo_manager(), "")
+        finally:
+            app.destroy()
+
     def test_sign_out_stops_and_closes(self):
         access = FakeAccess()
         app = AutomationSuite(access=access)
@@ -131,6 +186,24 @@ class WebWorkspaceTests(unittest.TestCase):
             stop.assert_called_once_with(3000)
             self.assertEqual(start.call_args.kwargs["secret"], "0" * 64)
             self.assertIn(("web_secret", "sir", True), access.calls)
+        finally:
+            app.destroy()
+
+    def test_a_start_failure_is_shown_not_silent(self):
+        from suite_services.secure_store import SecureStoreError
+        access = FakeAccess()
+        app = AutomationSuite(access=access)
+        try:
+            with patch.object(access, "web_secret", side_effect=SecureStoreError("Windows could not protect the data")), \
+                    patch("abhishek_automation_suite.inspection_server.probe", return_value=None), \
+                    patch("abhishek_automation_suite.emissions_server.probe", return_value=None), \
+                    patch("abhishek_automation_suite.messagebox.showerror") as shown:
+                app.open_inspection_reports()
+                app.open_emissions_validation()
+            self.assertEqual(shown.call_count, 2)
+            self.assertIn("Windows could not protect the data", shown.call_args_list[0][0][1])
+            self.assertIsNone(app.sir_process)
+            self.assertEqual(app.sir_button.cget("state"), "normal")
         finally:
             app.destroy()
 
@@ -168,6 +241,38 @@ class AdminWindowTests(unittest.TestCase):
             self.assertIn("cannot remove your own admin right", window.status.cget("text"))
             window.destroy()
         finally:
+            app.destroy()
+
+    def test_admin_sets_a_temporary_password_shown_once_and_never_audited(self):
+        store = MemoryAccessStore([UserAccess("boss@x.com", "Boss", admin=True).with_modules(["oil"]),
+                                   UserAccess("alice@x.com", "Alice").with_modules(["evi"])])
+        access = FakeAccess(admin=True, email="boss@x.com", store=store)
+        app = AutomationSuite(access=access)
+        cost = patch.dict(passwords.COST, {"n": 2 ** 14, "r": 8, "p": 1})
+        cost.start()
+        try:
+            from suite_services.access.ui import AdminWindow
+            window = AdminWindow(app, access)
+            self.assertTrue(pump(app, lambda: len(window.people) == 2))
+            window._select(store.get_user("alice@x.com"))
+            self.assertIn("Microsoft only", window.password_state.cget("text"))
+            window.set_temporary_password()
+            self.assertTrue(pump(app, lambda: window.pending_password is not None))
+            temporary = window.pending_password[1]
+            with patch("suite_services.access.ui.messagebox.showinfo") as shown:
+                window.save()
+                self.assertTrue(pump(app, lambda: shown.called))
+            self.assertIn(temporary, shown.call_args[0][1])
+            alice = store.get_user("alice@x.com")
+            current = passwords.resolve(alice.email, alice.password)
+            self.assertTrue(current.temporary)
+            self.assertIsNotNone(passwords.matches(temporary, current.verifier))
+            self.assertIn("password:temporary", store.audit(target="alice@x.com")[0]["changes"])
+            self.assertNotIn(temporary, json.dumps(store.audit_log))
+            self.assertNotIn(alice.password["verifier"]["pub"], json.dumps(store.audit_log))
+            window.destroy()
+        finally:
+            cost.stop()
             app.destroy()
 
 

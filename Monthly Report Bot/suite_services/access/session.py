@@ -7,10 +7,14 @@ and is re-checked against the access list every refresh_minutes (15) while the l
 
 Local mode (sign-in not set up and not required by policy.json): the Windows user with every workspace, exactly
 as before sign-in existed. Web workspaces still get signed tickets in local mode.
+
+Two ways to sign in, both checked against the same access list: a Microsoft work account (when IT's app registration
+is entered on this PC) and a NeraVeda ID + password (passwords.py), for people the admin has given a password.
 """
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.error
 import urllib.parse
@@ -19,10 +23,14 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from suite_services import actor, secure_store
-from suite_services.access import tickets
+from suite_services.access import passwords, tickets
 from suite_services.access.config import AccessConfig, access_dir, credentials_dir, load_config, read_secret
-from suite_services.access.entitlements import MODULES, Grant, UserAccess
+from suite_services.access.entitlements import MODULES, Grant, UserAccess, normalise_email
 from suite_services.access.store import DEFAULT_POLICY
+
+WRONG_PASSWORD = "The NeraVeda ID or password is not correct."
+#: After this many wrong passwords on this PC, wait before the next try (doubling up to MAX_LOCK_SECONDS).
+FREE_ATTEMPTS, FIRST_LOCK_SECONDS, MAX_LOCK_SECONDS, ATTEMPT_WINDOW_SECONDS = 5, 60, 15 * 60, 30 * 60
 
 SESSION_PURPOSE = "session"
 WEB_KEYS = ("sir", "evi")
@@ -51,6 +59,21 @@ class SessionExpired(AccessError):
     pass
 
 
+class PasswordChangeRequired(AccessError):
+    """The password is right but temporary: the person must choose their own to finish signing in."""
+
+
+class PasswordRejected(AccessError):
+    """The new password does not meet the rules."""
+
+
+class TooManyAttempts(AccessError):
+    pass
+
+
+SIGNED_IN_MODES = ("entra", "password")
+
+
 @dataclass(frozen=True)
 class Session:
     email: str
@@ -58,13 +81,15 @@ class Session:
     oid: str | None
     admin: bool
     modules: tuple[str, ...]
-    mode: str  # "entra" | "local"
+    mode: str  # "entra" (Microsoft) | "password" (NeraVeda ID and password) | "local"
     signed_in_at: float
     verified_at: float
     session_hours: float = DEFAULT_POLICY["session_hours"]
     grace_hours: float = DEFAULT_POLICY["offline_grace_hours"]
     refresh_minutes: float = DEFAULT_POLICY["refresh_minutes"]
     extra: dict = field(default_factory=dict, compare=False)
+    #: password sessions: which password signed in (passwords.Current.fingerprint); a reset or change ends the session
+    credential: str = ""
 
     @property
     def expires_at(self) -> float:
@@ -89,6 +114,7 @@ class Session:
                 session_hours=float(d.get("session_hours") or DEFAULT_POLICY["session_hours"]),
                 grace_hours=float(d.get("grace_hours") or DEFAULT_POLICY["offline_grace_hours"]),
                 refresh_minutes=float(d.get("refresh_minutes") or DEFAULT_POLICY["refresh_minutes"]),
+                credential=str(d.get("credential") or ""),
             )
         except (KeyError, TypeError, ValueError, UnicodeDecodeError):
             return None
@@ -120,6 +146,7 @@ class AccessService:
         self._store_factory = store_factory
         self.session: Session | None = None
         self.last_error: str | None = None
+        self._failures: list[float] = []
 
     @classmethod
     def from_config(cls) -> "AccessService":
@@ -140,7 +167,17 @@ class AccessService:
 
     @property
     def offline(self) -> bool:
-        return self.last_error is not None and self.session is not None and self.session.mode == "entra"
+        return self.last_error is not None and self.session is not None and self.session.mode in SIGNED_IN_MODES
+
+    @property
+    def signin_methods(self) -> dict[str, bool]:
+        """Which sign-in methods this PC offers."""
+        return {"microsoft": self.config.microsoft, "password": self.config.configured}
+
+    @property
+    def password_user(self) -> bool:
+        """Signed in with a NeraVeda password (so "Change password" applies)."""
+        return self.signed_in and self.session.mode == "password"
 
     @property
     def user_label(self) -> str:
@@ -162,7 +199,7 @@ class AccessService:
         if self.needs_setup:
             return None
         stored = self.sessions.load()
-        if stored is not None and stored.mode == "entra" and stored.valid(self.clock()):
+        if stored is not None and stored.mode in SIGNED_IN_MODES and stored.valid(self.clock()):
             self.session = stored
             actor.set_current(stored.email, stored.name)
             return stored
@@ -181,18 +218,26 @@ class AccessService:
         from suite_services.access.store import AccessStore
         return AccessStore(self.config.reader_uri, self.config.db_name, self.config.dns_servers)
 
+    def _require_setup(self, microsoft: bool = False) -> None:
+        if self.needs_setup or not self.config.configured:
+            raise NotSetUp("Sign-in is required, but this PC has no sign-in settings. Ask your admin to run the NeraVeda setup.")
+        if microsoft and not self.config.microsoft:
+            raise NotSetUp("Microsoft sign-in is not set up on this PC. Sign in with your NeraVeda ID and password.")
+
     def try_silent(self) -> Session | None:
         if self.needs_setup:
             raise NotSetUp("Sign-in is required, but this PC has no sign-in settings. Ask your admin to run the NeraVeda setup.")
+        if not self.config.microsoft:
+            return None  # nothing to try without Microsoft sign-in: the person types ID and password
         identity = self._sign().silent()
         return self._establish(identity) if identity else None
 
     def sign_in(self, parent_window_handle: int | None = None) -> Session:
-        if self.needs_setup:
-            raise NotSetUp("Sign-in is required, but this PC has no sign-in settings. Ask your admin to run the NeraVeda setup.")
+        self._require_setup(microsoft=True)
         return self._establish(self._sign().interactive(parent_window_handle))
 
     def sign_in_with_code(self, on_code) -> Session:
+        self._require_setup(microsoft=True)
         return self._establish(self._sign().device_code(on_code))
 
     def _person(self, store, email: str, oid: str | None) -> UserAccess:
@@ -208,14 +253,18 @@ class AccessService:
     def _establish(self, identity) -> Session:
         store = self._reader()
         person = self._person(store, identity.email, identity.oid)
+        return self._start(store, person, "entra", identity.oid, identity.name)
+
+    def _start(self, store, person: UserAccess, mode: str, oid: str | None, name: str, credential: str = "") -> Session:
         policy = store.policy()
         now = self.clock()
         session = Session(
-            email=person.email, name=person.name or identity.name, oid=identity.oid, admin=person.admin, modules=person.modules,
-            mode="entra", signed_in_at=now, verified_at=now,
+            email=person.email, name=person.name or name, oid=oid, admin=person.admin, modules=person.modules,
+            mode=mode, signed_in_at=now, verified_at=now,
             session_hours=float(policy.get("session_hours", DEFAULT_POLICY["session_hours"])),
             grace_hours=float(policy.get("offline_grace_hours", DEFAULT_POLICY["offline_grace_hours"])),
             refresh_minutes=float(policy.get("refresh_minutes", DEFAULT_POLICY["refresh_minutes"])),
+            credential=credential,
         )
         self.sessions.save(session)
         self.session = session
@@ -223,13 +272,89 @@ class AccessService:
         actor.set_current(session.email, session.name)
         return session
 
+    # ── NeraVeda ID and password ──
+    def _check_attempts(self) -> None:
+        now = self.clock()
+        self._failures = [t for t in self._failures if now - t < ATTEMPT_WINDOW_SECONDS]
+        extra = len(self._failures) - FREE_ATTEMPTS
+        if extra >= 0:
+            wait = min(MAX_LOCK_SECONDS, FIRST_LOCK_SECONDS * 2 ** extra) - (now - self._failures[-1])
+            if wait > 0:
+                raise TooManyAttempts(f"Too many wrong passwords on this PC. Try again in {math.ceil(wait)} seconds.")
+
+    def _current_password(self, store, person: UserAccess | None):
+        if person is None or not person.password:
+            return None
+        return passwords.resolve(person.email, person.password, store.password_changes(person.email))
+
+    def _record_change(self, store, email: str, current, key, new_password: str):
+        """Write the person's own change (signed with the old password) and return the password now in force."""
+        found = passwords.problems(new_password, email)
+        if passwords.matches(new_password, current.verifier) is not None:
+            found.append("Choose a password different from the current one.")
+        if found:
+            raise PasswordRejected(" ".join(found))
+        verifier, _key = passwords.new_verifier(new_password)
+        store.add_password_change(passwords.change_record(email, current, key, verifier))
+        now_current = passwords.resolve(email, store.get_user(email).password, store.password_changes(email))
+        if now_current is None or now_current.verifier.get("pub") != verifier["pub"]:
+            raise AccessError("Your password was changed at the same moment on another PC. Sign in again with the newest password.")
+        return now_current
+
+    def sign_in_with_password(self, email: str, password: str, new_password: str | None = None) -> Session:
+        """Sign in with the NeraVeda ID (work email) and password. A temporary password needs `new_password`."""
+        self._require_setup()
+        self._check_attempts()
+        try:
+            email = normalise_email(email)
+        except ValueError:
+            self._failures.append(self.clock())
+            raise AccessDenied(WRONG_PASSWORD) from None
+        store = self._reader()
+        person = store.get_user(email)
+        current = self._current_password(store, person)
+        if current is None:
+            passwords.spend(password)  # same time as a real check
+        key = passwords.matches(password, current.verifier) if current is not None else None
+        if key is None:  # the same answer, after the same time, for an unknown ID, no password and a wrong password
+            self._failures.append(self.clock())
+            raise AccessDenied(WRONG_PASSWORD)
+        self._failures.clear()
+        if not person.active:
+            raise AccessDenied(f"{email} has been deactivated in NeraVeda. Ask an admin if this is a mistake.", email)
+        if current.temporary and not new_password:
+            raise PasswordChangeRequired("This is a temporary password. Choose your own password to finish signing in.")
+        if new_password:
+            current = self._record_change(store, email, current, key, new_password)
+        return self._start(store, person, "password", None, person.name or email, current.fingerprint)
+
+    def change_password(self, old_password: str, new_password: str) -> None:
+        if not self.password_user:
+            raise AccessError("Change password applies to NeraVeda passwords. Microsoft passwords are changed with Microsoft.")
+        store = self._reader()
+        person = store.get_user(self.session.email)
+        current = self._current_password(store, person)
+        key = passwords.matches(old_password, current.verifier) if current is not None else None
+        if key is None:
+            raise AccessDenied("Your current password is not correct.")
+        current = self._record_change(store, person.email, current, key, new_password)
+        self.session = replace(self.session, credential=current.fingerprint, verified_at=self.clock())
+        self.sessions.save(self.session)
+
     def refresh(self) -> Session | None:
         """Re-read this person's rights. Offline: keep the session until the grace period ends."""
         if self.session is None or self.session.mode == "local":
             return self.session
         try:
-            person = self._person(self._reader(), self.session.email, self.session.oid)
-        except AccessDenied:
+            store = self._reader()
+            person = self._person(store, self.session.email, self.session.oid)
+            if self.session.mode == "password":
+                current = self._current_password(store, person)
+                if current is None:
+                    raise AccessDenied(f"Password sign-in has been removed for {person.email}. Ask your admin.", person.email)
+                if current.fingerprint != self.session.credential:
+                    raise SessionExpired("Your NeraVeda password was changed or reset. Sign in again.")
+        except (AccessDenied, SessionExpired):
             self.sessions.clear()
             self.session = None
             actor.set_current(None)
@@ -248,7 +373,7 @@ class AccessService:
 
     def sign_out(self) -> None:
         try:
-            if not self.local_mode and self.config.configured:
+            if self.session is not None and self.session.mode == "entra" and self.config.microsoft:
                 self._sign().sign_out()
         finally:
             self.sessions.clear()
@@ -261,7 +386,7 @@ class AccessService:
 
     @property
     def is_admin(self) -> bool:
-        return self.signed_in and self.session.mode == "entra" and self.session.admin
+        return self.signed_in and self.session.mode in SIGNED_IN_MODES and self.session.admin
 
     @property
     def can_administer(self) -> bool:
@@ -300,7 +425,7 @@ class AccessService:
         if not self.signed_in:
             raise SessionExpired("Sign in to NeraVeda first.")
         s = self.session
-        return tickets.mint(self.web_secret(key), typ, key, s.email, name=s.name, adm=s.admin and s.mode == "entra",
+        return tickets.mint(self.web_secret(key), typ, key, s.email, name=s.name, adm=s.admin and s.mode in SIGNED_IN_MODES,
                             grants=[Grant(key).to_document()] if key in s.modules else [], ttl=ttl, now=self.clock())
 
     def web_entry_url(self, key: str, port: int, path: str) -> str:
