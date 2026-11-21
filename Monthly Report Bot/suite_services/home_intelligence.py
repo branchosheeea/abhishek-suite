@@ -66,7 +66,8 @@ class Intel:
 
     state: ok, partial, none (nothing processed yet), not_connected (no saved result Home can read),
     failed (latest processing failed) or error (saved results could not be read).
-    headline/context/freshness feed the Latest Intelligence tile; outcome/updated feed the workspace card.
+    headline/context/freshness are the three lines of the workspace card on the home page, and the attention
+    items give its count. outcome/updated are a one-line summary kept for other uses; the home page does not show them.
     """
     key: str
     state: str

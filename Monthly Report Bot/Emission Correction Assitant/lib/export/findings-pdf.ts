@@ -12,9 +12,10 @@ import { type Color, PDFDocument, type PDFFont, type PDFPage, rgb } from "pdf-li
 import { RULE_BY_ID } from "../engine/rules/registry"
 import { EVIDENCE_LABEL, type Finding, RULE_GROUP_LABEL } from "../engine/types"
 import { FINDING_STATUSES } from "../server/diagnostics"
+import { exportHeader, exportMetadata, FINDINGS_BANNER } from "./brand"
 import { SCOPE_LABEL } from "./findings-filter"
 import { FILL_IN_STEPS, type FindingsExportOptions, vesselLine } from "./findings-xlsx"
-import { notesFor, REPORT_BANNER, type ReportInput, statusOf } from "./report"
+import { notesFor, type ReportInput, statusOf } from "./report"
 
 export const statusField = (findingId: string) => `status__${findingId}`
 export const remarksField = (findingId: string) => `remarks__${findingId}`
@@ -184,11 +185,12 @@ export async function buildFindingsPdf(input: ReportInput, findings: readonly Fi
   const form = doc.getForm()
 
   doc.setTitle(`Findings for vessel review — ${session.vessel}`)
-  doc.setSubject(REPORT_BANNER)
+  doc.setSubject(FINDINGS_BANNER)
   doc.setAuthor(input.generatedBy)
-  doc.setCreator("NeraVeda Emissions Validation")
-  doc.setProducer("NeraVeda")
-  doc.setKeywords(["NeraVeda", "diagnostic", "findings", session.vessel, ...(session.imo ? [session.imo] : [])])
+  const meta = exportMetadata()
+  doc.setCreator(meta.creator)
+  doc.setProducer(meta.producer)
+  doc.setKeywords([...meta.keywords, "diagnostic", "findings", session.vessel, ...(session.imo ? [session.imo] : [])])
 
   const blocks: Block[] = []
   const add = (...b: Block[]) => blocks.push(...b)
@@ -522,19 +524,21 @@ export async function buildFindingsPdf(input: ReportInput, findings: readonly Fi
     block.draw?.(pages[page], top)
   }
   const period = session.config.period ? `${session.config.period.from} to ${session.config.period.to}` : "period not set"
+  const header = exportHeader("Findings for vessel review")
+  const markSize = header.mark.length > 1 ? 11 : 14
   pages.forEach((page, i) => {
     const [w, h] = PAGE
     page.drawRectangle({ x: 0, y: h - 48, width: w, height: 48, color: C.navy })
     roundRect(page, M, h - 10, 28, 28, 6, { color: C.primary })
-    page.drawText("N", { x: M + 9, y: h - 30, size: 14, font: bold, color: C.white })
-    page.drawText("NeraVeda", { x: M + 38, y: h - 23, size: 12, font: bold, color: C.white })
-    page.drawText("Emissions Validation · Findings for vessel review", { x: M + 38, y: h - 35, size: 7.5, font: sans, color: C.bandText })
+    page.drawText(header.mark, { x: M + 14 - measure(bold, header.mark, markSize) / 2, y: h - 24.5 - markSize * 0.36, size: markSize, font: bold, color: C.white })
+    page.drawText(header.title, { x: M + 38, y: h - 23, size: 12, font: bold, color: C.white })
+    page.drawText(header.subtitle, { x: M + 38, y: h - 35, size: 7.5, font: sans, color: C.bandText })
     const vessel = fit(fonts.clean(session.vessel), bold, 11, 220)
     page.drawText(vessel, { x: w - M - measure(bold,vessel, 11), y: h - 23, size: 11, font: bold, color: C.white })
     const sub = fonts.clean(`IMO ${session.imo ?? "not set"} · ${period}`)
     page.drawText(sub, { x: w - M - measure(sans,sub, 7.5), y: h - 35, size: 7.5, font: sans, color: C.bandText })
     page.drawRectangle({ x: 0, y: h - 66, width: w, height: 18, color: C.criticalBg })
-    page.drawText(REPORT_BANNER, { x: M, y: h - 60, size: 8, font: bold, color: C.critical })
+    page.drawText(FINDINGS_BANNER, { x: M, y: h - 60, size: 8, font: bold, color: C.critical })
     page.drawLine({ start: { x: M, y: 32 }, end: { x: w - M, y: 32 }, thickness: 0.5, color: C.line })
     const foot = fit(fonts.clean(`Run ${run.startedAt.replace("T", " ").slice(0, 16)} UTC (${run._id.slice(0, 8)}) · ${session.title} · generated ${input.generatedAt.replace("T", " ").slice(0, 16)} UTC by ${input.generatedBy}`), sans, 7, CW - 70)
     page.drawText(foot, { x: M, y: 20, size: 7, font: sans, color: C.muted })

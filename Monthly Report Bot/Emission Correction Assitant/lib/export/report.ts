@@ -9,9 +9,10 @@ import { RULES } from "../engine/rules/registry"
 import type { ValidationResult } from "../engine/run"
 import type { DnvDoc, LinkDoc, NoteDoc, RunDoc, SessionDoc, StatusDoc, StatusHistoryDoc } from "../server/diagnostics"
 import type { SourceArtifact } from "../server/source-store"
+import { FINDINGS_PRODUCT_NAME, filePrefix, PRODUCT_NAME, REPORT_BANNER } from "./brand"
 import { writeXlsx, type XlsxCell, type XlsxSheet } from "./xlsx-writer"
 
-export const REPORT_BANNER = "NERAVEDA DIAGNOSTIC REPORT — NOT AN OFFICIAL VESSEL REPORTING FILE"
+export { REPORT_BANNER }
 
 export type ReportInput = Readonly<{
   session: SessionDoc
@@ -200,5 +201,6 @@ export function buildXlsxReport(input: ReportInput): Buffer {
 export function reportFilename(session: SessionDoc, run: RunDoc, extension: "json" | "xlsx" | "pdf", kind: "DIAGNOSTIC" | "FINDINGS" = "DIAGNOSTIC"): string {
   const clean = (s: string) => s.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40)
   const period = session.config.period ? `${session.config.period.from}_${session.config.period.to}` : "no-period"
-  return `NERAVEDA-${kind}_${clean(session.vessel)}_${period}_run-${run._id.slice(0, 8)}.${extension}`
+  const prefix = filePrefix(kind === "FINDINGS" ? FINDINGS_PRODUCT_NAME : PRODUCT_NAME)
+  return `${prefix}${kind}_${clean(session.vessel)}_${period}_run-${run._id.slice(0, 8)}.${extension}`
 }

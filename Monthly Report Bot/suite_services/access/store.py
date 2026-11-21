@@ -184,8 +184,14 @@ class AccessStore(_Base):
     def __init__(self, uri: str, db_name: str = "neraveda_access", dns_servers=(), timeout_ms: int = 8000):
         if not uri:
             raise AccessStoreError("No access-list connection string is configured on this PC.")
-        apply_dns_override(dns_servers)
-        from pymongo import MongoClient
+        try:
+            apply_dns_override(dns_servers)
+            from pymongo import MongoClient
+        except ImportError as error:
+            import sys
+            raise AccessStoreError(
+                f"Sign-in needs the 'pymongo' package for the Python NeraVeda runs on ({sys.executable}). "
+                "In the Monthly Report Bot folder run:  <that python.exe> -m pip install -r requirements.txt") from error
         self._client = MongoClient(uri, serverSelectionTimeoutMS=timeout_ms, appname="neraveda-access", retryWrites=True)
         self._db = self._client[db_name]
         self._db_user_cache: str | None = None

@@ -5,7 +5,8 @@ import { RULE_BY_ID } from "../engine/rules/registry"
 import { EVIDENCE_LABEL, type Finding, RULE_GROUP_LABEL } from "../engine/types"
 import { FINDING_STATUSES } from "../server/diagnostics"
 import { type ExportScope, SCOPE_LABEL } from "./findings-filter"
-import { limitations, notesFor, refText, REPORT_BANNER, type ReportInput, statusOf } from "./report"
+import { FINDINGS_BANNER } from "./brand"
+import { limitations, notesFor, refText, type ReportInput, statusOf } from "./report"
 import { type CellStyle, writeXlsx, type XlsxCell, type XlsxSheet } from "./xlsx-writer"
 
 export type FindingsExportOptions = Readonly<{ scope: ExportScope; includeNotes: boolean }>
@@ -33,7 +34,7 @@ export function buildFindingsXlsx(input: ReportInput, findings: readonly Finding
     ...(options.includeNotes ? ["Office notes"] : []), "Finding id",
   ]
   const statusColumn = 15
-  const top: XlsxCell[][] = [[b(REPORT_BANNER)], [w(vesselLine(input), "muted")], []]
+  const top: XlsxCell[][] = [[b(FINDINGS_BANNER)], [w(vesselLine(input), "muted")], []]
   const rows: XlsxCell[][] = findings.map((f, i) => [
     i + 1,
     w(f.severity, f.severity === "error" ? "error" : f.severity === "warning" ? "warning" : "info"),
@@ -68,7 +69,7 @@ export function buildFindingsXlsx(input: ReportInput, findings: readonly Finding
 
   const count = (sev: string) => findings.filter((f) => f.severity === sev).length
   const readMe: XlsxCell[][] = [
-    [b(REPORT_BANNER)],
+    [b(FINDINGS_BANNER)],
     [],
     [b("Findings for vessel review")],
     [b("Vessel"), session.vessel],
@@ -90,6 +91,6 @@ export function buildFindingsXlsx(input: ReportInput, findings: readonly Finding
   return writeXlsx([
     { name: "Read me", rows: readMe, widths: [20, 110], autoHeight: true },
     findingsSheet,
-    { name: "Calculations", rows: [[b(REPORT_BANNER)], [], ["No.", "Rule", "Item", "Label / text", "Value", "Source record", "Column"].map((h) => w(h, "header")), ...calcRows], widths: [5, 7, 13, 80, 18, 22, 26], freezeRows: 3, autoHeight: true },
+    { name: "Calculations", rows: [[b(FINDINGS_BANNER)], [], ["No.", "Rule", "Item", "Label / text", "Value", "Source record", "Column"].map((h) => w(h, "header")), ...calcRows], widths: [5, 7, 13, 80, 18, 22, 26], freezeRows: 3, autoHeight: true },
   ])
 }

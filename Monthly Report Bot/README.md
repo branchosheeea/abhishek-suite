@@ -18,7 +18,7 @@ python abhishek_automation_suite.py
 
 ### Sign-in and access rights
 
-People sign in with a NeraVeda ID (their work email) and password, or with their Microsoft work account once IT has registered the app. An admin chooses which workspaces each person may use, and gives out temporary passwords (**Admin**, top right). Workspaces a person may not use are hidden from the home page, the sidebar and Requires Attention.
+People sign in with a NeraVeda ID (their work email) and password, or with their Microsoft work account once IT has registered the app. An admin chooses which workspaces each person may use, and gives out temporary passwords (**Admin**, top right). Workspaces a person may not use are hidden from the home page, the sidebar and Needs attention.
 - Desktop workspaces started directly (e.g. `python -m lube_oil`) open only with a NeraVeda session that includes them.
 - The web workspaces (06, 07) accept requests only from the browser NeraVeda opened, with that person's session.
 - Until a PC is set up, NeraVeda runs in **local mode**: the Windows user, with every workspace, as before.
@@ -27,7 +27,11 @@ Set-up, adding people and leavers: [docs/NERAVEDA_ADMIN_GUIDE.md](docs/NERAVEDA_
 
 ### Fleet Intelligence home
 
-The home page shows **the latest results each workspace has already saved**, not live data, in three sections: **Latest Intelligence** (one tile per workspace: what is known, its period, and when it was processed), **Requires Attention** (the 3–4 highest-priority items, by severity, alternating between workspaces) and **Workspaces** (compact cards with an open action). It never fetches from MariApps, Outlook or vessels and never writes to workspace data: `suite_services/home_intelligence.py` opens the shared database read-only and applies each workspace's own rules. **Reload saved results** re-reads them; the page also reloads when a workspace window closes.
+The home page shows **the latest results each workspace has already saved**, not live data. Below a compact header (title, date, who is signed in) it has two sections:
+- **Workspaces:** one card per workspace. Each card shows what is known, its period, when it was processed, how many items need attention (an amber or red count; click it to jump to the list), and the **Open** action.
+- **Needs attention:** the 3–4 highest-priority items, by severity, alternating between workspaces, with "N more" per workspace.
+
+It never fetches from MariApps, Outlook or vessels and never writes to workspace data: `suite_services/home_intelligence.py` opens the shared database read-only and applies each workspace's own rules. **Reload saved results** re-reads them; the page also reloads when a workspace window closes.
 
 | Workspace | What Home reads | Attention items |
 |---|---|---|

@@ -41,7 +41,10 @@ NeraVeda to open them: opening `localhost:3000` / `3001` directly shows "Open fr
    | Role | Actions |
    |---|---|
    | `neravedaAccessRead` | `find` on `users` and `meta`; `find`, `insert` on `password_changes` |
-   | `neravedaAccessAdmin` | `find`, `insert`, `update` on `users` and `meta`; `find`, `insert` on `audit`; `find` on `password_changes`; `createIndex`, `listIndexes` on all four. **No** `remove` or drop anywhere. |
+   | `neravedaAccessAdmin` | `find`, `insert`, `update` on `users` and `meta`; `find`, `insert` on `audit`; `find` on `password_changes`; `createCollection`, `createIndex` on all four. **No** `remove` or drop anywhere. |
+
+   In the Atlas form, tick only the individual action names. Ticking a group heading (such as *Query and Write
+   Actions*) selects every action under it, including `remove` and drop.
 
    - **Why the read-only role can insert:** inserting into `password_changes` is how people choose their own
      password. Each change must be signed with the person's previous password, so nobody can set someone else's

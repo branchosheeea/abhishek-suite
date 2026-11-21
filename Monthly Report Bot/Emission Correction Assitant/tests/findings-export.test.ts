@@ -7,7 +7,8 @@ import type { Finding } from "../lib/engine/types"
 import { exportParams, NO_FILTER, parseExportParams, selectFindings } from "../lib/export/findings-filter"
 import { buildFindingsPdf, remarksField, statusField } from "../lib/export/findings-pdf"
 import { buildFindingsXlsx } from "../lib/export/findings-xlsx"
-import { REPORT_BANNER, reportFilename, statusOf } from "../lib/export/report"
+import { exportHeader, exportMetadata, filePrefix, FINDINGS_BANNER, FINDINGS_PRODUCT_NAME, PRODUCT_NAME, reportBanner } from "../lib/export/brand"
+import { buildJsonReport, REPORT_BANNER, reportFilename, statusOf } from "../lib/export/report"
 import { readZipDirectory, readZipEntry } from "../lib/parsers/zip"
 import { FINDING_STATUSES, memoryDiagnostics } from "../lib/server/diagnostics"
 import { loadReportInput } from "../lib/server/reporting"
@@ -65,7 +66,7 @@ describe("findings PDF for vessel review", () => {
     const findings = selectFindings(input.result.findings, (id) => statusOf(input, id), "errors-warnings")
     const bytes = await buildFindingsPdf(input, findings, { scope: "errors-warnings", includeNotes: false })
     const pdf = await PDFDocument.load(bytes)
-    assert.equal(pdf.getSubject(), REPORT_BANNER)
+    assert.equal(pdf.getSubject(), FINDINGS_BANNER)
     assert.ok(pdf.getPageCount() >= 2)
     const form = pdf.getForm()
     for (const f of findings) {
@@ -108,7 +109,7 @@ describe("findings Excel for vessel review", () => {
     const sheets = readZipDirectory(xlsx).filter((e) => e.name.startsWith("xl/worksheets/"))
     assert.equal(sheets.length, 3)
     const text = sheets.map((e) => readZipEntry(xlsx, e).toString("utf8"))
-    for (const t of text) assert.ok(t.includes(REPORT_BANNER))
+    for (const t of text) assert.ok(t.includes(FINDINGS_BANNER))
     const findingsSheet = text[1]
     assert.match(findingsSheet, new RegExp(`<dataValidation type="list"[^>]*sqref="P5:P${4 + findings.length}"><formula1>&quot;New,Under Investigation,Awaiting Vessel Clarification,Reviewed,Closed&quot;</formula1>`))
     assert.match(findingsSheet, /<pane ySplit="4" topLeftCell="A5"/)
@@ -122,6 +123,40 @@ describe("findings Excel for vessel review", () => {
 
   test("export file names say FINDINGS and are never reporting-file names", async () => {
     const { input } = await completedRun()
-    assert.match(reportFilename(input.session, input.run, "pdf", "FINDINGS"), /^NERAVEDA-FINDINGS_TEST-VESSEL_2025-01-01_2025-12-31_run-.+\.pdf$/)
+    assert.match(reportFilename(input.session, input.run, "pdf", "FINDINGS"), /^FINDINGS_TEST-VESSEL_2025-01-01_2025-12-31_run-.+\.pdf$/)
+  })
+})
+
+describe("product name on the findings PDF and Excel (hidden until launch)", () => {
+  test("the findings PDF and Excel for vessel review do not name the product yet", { skip: FINDINGS_PRODUCT_NAME ? "launched: the product name is shown" : false }, async () => {
+    const { input } = await completedRun()
+    const findings = selectFindings(input.result.findings, (id) => statusOf(input, id), "errors-warnings")
+    const pdf = await PDFDocument.load(await buildFindingsPdf(input, findings, { scope: "errors-warnings", includeNotes: false }), { updateMetadata: false })
+    const xlsx = buildFindingsXlsx(input, findings, { scope: "errors-warnings", includeNotes: false })
+    const xlsxText = readZipDirectory(xlsx).map((e) => readZipEntry(xlsx, e).toString("utf8")).join(" ")
+    const header = exportHeader("Findings for vessel review")
+    const everything = [
+      pdf.getTitle(), pdf.getSubject(), pdf.getCreator(), pdf.getProducer(), pdf.getKeywords(),
+      header.mark, header.title, header.subtitle, xlsxText,
+      reportFilename(input.session, input.run, "pdf", "FINDINGS"), reportFilename(input.session, input.run, "xlsx", "FINDINGS"),
+    ]
+    for (const text of everything) assert.doesNotMatch(String(text ?? ""), /nera\s*veda/i)
+    assert.deepEqual(header, { mark: "EV", title: "Emissions Validation", subtitle: "Findings for vessel review" })
+    assert.equal(FINDINGS_BANNER, "DIAGNOSTIC REPORT — NOT AN OFFICIAL VESSEL REPORTING FILE")
+  })
+
+  test("the diagnostic report keeps the product name", async () => {
+    const { input } = await completedRun()
+    assert.equal(REPORT_BANNER, `${PRODUCT_NAME.toUpperCase()} DIAGNOSTIC REPORT — NOT AN OFFICIAL VESSEL REPORTING FILE`)
+    assert.equal(buildJsonReport(input).banner, REPORT_BANNER)
+    assert.match(reportFilename(input.session, input.run, "xlsx"), /^NERAVEDA-DIAGNOSTIC_/)
+  })
+
+  test("at launch one setting brings the name back on the findings files", () => {
+    assert.equal(reportBanner("NeraVeda"), "NERAVEDA DIAGNOSTIC REPORT — NOT AN OFFICIAL VESSEL REPORTING FILE")
+    assert.equal(filePrefix("NeraVeda"), "NERAVEDA-")
+    assert.deepEqual(exportHeader("Findings for vessel review", "NeraVeda"),
+      { mark: "N", title: "NeraVeda", subtitle: "Emissions Validation · Findings for vessel review" })
+    assert.deepEqual(exportMetadata("NeraVeda"), { creator: "NeraVeda Emissions Validation", producer: "NeraVeda", keywords: ["NeraVeda"] })
   })
 })

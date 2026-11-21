@@ -44,6 +44,10 @@ IDLE_BG  = "#EEF1F4"
 # Single unified action colour — one action colour, no rainbow
 BTN     = "#1557A0"
 BTN_HV  = "#114888"
+# Workspace "Open" buttons are tonal (same blue as text on a light tint), so the home page's colour goes to
+# what needs attention rather than to seven identical solid buttons.
+OPEN_BG = "#E6EEF9"
+OPEN_HV = "#D4E2F5"
 FOCUS_RING = "#1557A0"
 FOCUS_RING_NAV = "#9CC6FF"
 
@@ -204,7 +208,6 @@ class AutomationSuite(ctk.CTk):
         self.scroll_router   = ScrollRouter(self)
         self.running         = {key: False for key, *_ in WORKSPACES}
         self.columns         = None
-        self.tile_columns    = None
         self.content_width   = 900
         self.attention_limit = 4
         self.attention_rows  = []
@@ -321,10 +324,10 @@ class AutomationSuite(ctk.CTk):
         page.pack(fill="both", expand=True, padx=(12, 4))
         page.grid_columnconfigure(0, weight=1)
 
-        self._build_latest(page)
-        self._build_attention(page)
+        # One card per workspace (what it knows, when, what needs attention, Open), then the attention list.
         self._build_workspaces(page)
-        self._build_footer(page, row=6)
+        self._build_attention(page)
+        self._build_footer(page, row=5)
         self._build_sidebar(sidebar)
 
         self._layout(self._logical_width())
@@ -351,29 +354,27 @@ class AutomationSuite(ctk.CTk):
     # ── Header (fixed) ────────────────────────────────────────────────────────
 
     def _build_header(self, bar):
+        """One compact band: page title and date on the left, who is signed in on the right."""
         bar.grid_columnconfigure(0, weight=1)
         hour = datetime.now().hour
         greeting = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
+        self._txt(bar, "Fleet Intelligence", 20, INK, True).grid(row=0, column=0, sticky="sw", padx=36, pady=(14, 0))
         self._txt(bar, f"{greeting}  ·  {datetime.now():%A, %d %B %Y}", 11, MUTED).grid(
-            row=0, column=0, sticky="w", padx=36, pady=(16, 2))
-        self._txt(bar, "Fleet Intelligence", 24, INK, True).grid(row=1, column=0, sticky="w", padx=36)
-        self.subtitle = self._txt(
-            bar,
-            "One connected view of vessel reporting, technical performance, voyage operations, claims, "
-            "inspections, compliance and emissions reporting.",
-            12, MUTED, justify="left", wraplength=900,
-        )
-        self.subtitle.grid(row=2, column=0, sticky="w", padx=36, pady=(4, 12))
+            row=1, column=0, sticky="nw", padx=36, pady=(3, 12))
 
-        # Who is signed in, and what they can do here
+        # Who is signed in, and what they can do here (name and note, then the buttons beside them)
         self.user_box = ctk.CTkFrame(bar, fg_color="transparent")
-        self.user_box.grid(row=0, column=1, rowspan=3, sticky="ne", padx=(12, 36), pady=(16, 0))
-        self.user_name = self._txt(self.user_box, "", 12, INK, True, justify="right")
+        self.user_box.grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 36), pady=(10, 8))
+        who = ctk.CTkFrame(self.user_box, fg_color="transparent")
+        who.pack(side="left")
+        self.user_name = self._txt(who, "", 12, INK, True, justify="right")
         self.user_name.pack(anchor="e")
-        self.user_note = self._txt(self.user_box, "", 10, MUTED, justify="right")
+        self.user_note = self._txt(who, "", 10, MUTED, justify="right")
         self.user_note.pack(anchor="e", pady=(2, 0))
-        actions = ctk.CTkFrame(self.user_box, fg_color="transparent")
-        actions.pack(anchor="e", pady=(6, 0))
+        # height/width 1: with no button shown (local mode) the frame must not keep CTkFrame's default 200 px,
+        # which stretched the whole header.
+        actions = ctk.CTkFrame(self.user_box, fg_color="transparent", height=1, width=1)
+        actions.pack(side="left", padx=(14, 0))
         self.admin_button = ctk.CTkButton(
             actions, text="Admin", command=self.open_admin, width=74, height=28, corner_radius=8, fg_color=IDLE_BG,
             hover_color=SEP, text_color=BTN, border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"))
@@ -529,47 +530,11 @@ class AutomationSuite(ctk.CTk):
         caption_label.grid(row=0, column=1, sticky="w", padx=(12, 0))
         return bar
 
-    # ── Latest Intelligence ───────────────────────────────────────────────────
-
-    def _build_latest(self, page):
-        bar = self._section_header(page, 0, "Latest Intelligence",
-                                   "Latest saved result from each workspace. Not live data.", pady=(10, 6))
-        self.reload_button = ctk.CTkButton(
-            bar, text="Reload saved results", command=lambda: self.refresh_intelligence(fetch_sir=True),
-            fg_color="transparent", hover_color=IDLE_BG, text_color=BTN, height=28, width=150, corner_radius=8,
-            border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"))
-        self.reload_button.grid(row=0, column=2, sticky="e")
-        self._focusable(self.reload_button)
-
-        self.tile_host = ctk.CTkFrame(page, fg_color="transparent")
-        self.tile_host.grid(row=1, column=0, sticky="ew", padx=(20, 14))
-        for key in home_intelligence.ORDER:
-            self.tiles[key] = self._build_tile(key)
-
-    def _build_tile(self, key):
-        m = _MOD[key]
-        tile = ctk.CTkFrame(self.tile_host, fg_color=SURFACE, border_width=1, border_color=SEP, corner_radius=12)
-        head = ctk.CTkFrame(tile, fg_color="transparent")
-        head.pack(fill="x", padx=14, pady=(9, 0))
-        head.grid_columnconfigure(1, weight=1)
-        badge = ctk.CTkFrame(head, width=22, height=22, fg_color=m["tint"], corner_radius=6)
-        badge.grid(row=0, column=0, padx=(0, 8))
-        badge.pack_propagate(False)
-        ctk.CTkLabel(badge, text=m["badge"], text_color=m["accent"],
-                     font=ctk.CTkFont("Segoe UI", 7, weight="bold")).pack(expand=True)
-        name = self._txt(head, home_intelligence.NAMES[key].upper(), 9, MUTED, True, justify="left")
-        name.grid(row=0, column=1, sticky="w")
-        headline = self._txt(tile, "Loading saved results…", 13, MUTED, True, justify="left")
-        headline.pack(anchor="w", padx=14, pady=(6, 0))
-        detail = self._txt(tile, "", 11, MUTED, justify="left")
-        detail.pack(anchor="w", padx=14, pady=(3, 10))
-        return {"frame": tile, "name": name, "headline": headline, "detail": detail}
-
-    # ── Requires Attention ────────────────────────────────────────────────────
+    # ── Needs attention ───────────────────────────────────────────────────────
 
     def _build_attention(self, page):
-        self._section_header(page, 2, "Requires Attention", "Based on the latest completed workspace reviews",
-                             pady=(12, 6))
+        self._section_header(page, 2, "Needs attention", "From the latest completed review in each workspace",
+                             pady=(16, 8))
         self.attention_box = ctk.CTkFrame(page, fg_color=SURFACE, border_width=1, border_color=SEP, corner_radius=12)
         self.attention_box.grid(row=3, column=0, sticky="ew", padx=(20, 14))
         self.attention_more = self._txt(page, "", 11, MUTED, justify="left")
@@ -672,13 +637,23 @@ class AutomationSuite(ctk.CTk):
     # ── Workspaces ────────────────────────────────────────────────────────────
 
     def _build_workspaces(self, page):
-        self._section_header(page, 5, "Workspaces", "Open a workspace to fetch, process and review in detail",
-                             pady=(14, 6))
+        bar = self._section_header(page, 0, "Workspaces", "Latest saved result from each workspace · not live data",
+                                   pady=(14, 8))
+        self.reload_button = ctk.CTkButton(
+            bar, text="Reload saved results", command=lambda: self.refresh_intelligence(fetch_sir=True),
+            fg_color="transparent", hover_color=IDLE_BG, text_color=BTN, height=28, width=150, corner_radius=8,
+            border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"))
+        self.reload_button.grid(row=0, column=2, sticky="e")
+        self._focusable(self.reload_button)
+
         self.grid_host = ctk.CTkFrame(page, fg_color="transparent")
-        self.grid_host.grid(row=6, column=0, sticky="ew", padx=(20, 14))
+        self.grid_host.grid(row=1, column=0, sticky="ew", padx=(20, 14))
         cards = {}
-        for key, eyebrow, number, title, description, button_text, _ in WORKSPACES:
-            cards[key] = self._workspace_card(key, eyebrow, number, title, description, button_text)
+        for key, _eyebrow, _number, title, _description, button_text, _ in WORKSPACES:
+            cards[key] = self._workspace_card(key, title, button_text)
+        # The saved-result text of each card, by workspace (home_intelligence.ORDER).
+        self.tiles = {key: {"frame": card, "headline": card.headline, "detail": card.context,
+                            "freshness": card.freshness, "chip": card.chip} for key, (card, _button) in cards.items()}
         self._vessel_card, self.launch_button = cards["vessel"]
         self._oil_card, self.oil_button = cards["oil"]
         self._voyage_card, self.voyage_button = cards["voyage"]
@@ -705,37 +680,46 @@ class AutomationSuite(ctk.CTk):
         )
         self._focusable(self.evi_stop_button, page_widget=True)
 
-    def _workspace_card(self, key, eyebrow, number, title, description, button_text):
+    def _workspace_card(self, key, title, button_text):
+        """Badge and name; what the workspace last saved (headline, detail, when); how many items need
+        attention; and the Open action. Empty lines are hidden, so every card reads top to bottom."""
         m = _MOD[key]
-        card = ctk.CTkFrame(self.grid_host, fg_color=SURFACE, border_width=1, border_color=SEP, corner_radius=14)
-        ctk.CTkFrame(card, height=3, fg_color=m["accent"], corner_radius=2).pack(fill="x", padx=16, pady=(7, 0))
+        card = ctk.CTkFrame(self.grid_host, fg_color=SURFACE, border_width=1, border_color=SEP, corner_radius=12)
 
         head = ctk.CTkFrame(card, fg_color="transparent")
-        head.pack(fill="x", padx=16, pady=(9, 0))
-        badge = ctk.CTkFrame(head, width=36, height=36, fg_color=m["tint"], corner_radius=10)
-        badge.pack(side="left")
+        head.pack(fill="x", padx=14, pady=(12, 0))
+        head.grid_columnconfigure(1, weight=1)
+        badge = ctk.CTkFrame(head, width=32, height=32, fg_color=m["tint"], corner_radius=9)
+        badge.grid(row=0, column=0, sticky="w")
         badge.pack_propagate(False)
-        self._lbl(badge, m["badge"], 10, m["accent"], True).pack(expand=True)
-        titles = ctk.CTkFrame(head, fg_color="transparent")
-        titles.pack(side="left", fill="x", expand=True, padx=(12, 0))
-        self._txt(titles, f"{eyebrow}  ·  {number}", 9, m["accent"], True).pack(anchor="w")
-        card.title = self._txt(titles, title, 14, INK, True, justify="left")
-        card.title.pack(anchor="w", pady=(2, 0))
+        self._lbl(badge, m["badge"], 9, m["accent"], True).pack(expand=True)
+        card.title = self._txt(head, title, 13, INK, True, justify="left")
+        card.title.grid(row=0, column=1, sticky="w", padx=(10, 0))
 
-        card.description = self._txt(card, description, 11, MUTED, justify="left")
-        card.description.pack(anchor="w", padx=16, pady=(8, 0))
-        card.outcome = self._txt(card, "Loading saved results…", 12, MUTED, True, justify="left")
-        card.outcome.pack(anchor="w", padx=16, pady=(8, 0))
-        card.updated = self._txt(card, "", 10, MUTED, justify="left")
-        card.updated.pack(anchor="w", padx=16, pady=(3, 0))
+        body = ctk.CTkFrame(card, fg_color="transparent")
+        body.pack(fill="x", padx=14, pady=(10, 0))
+        card.headline = self._txt(body, "Loading saved results…", 13, MUTED, True, justify="left")
+        card.headline.grid(row=0, column=0, sticky="w")
+        card.context = self._txt(body, "", 11, MUTED, justify="left")
+        card.context.grid(row=1, column=0, sticky="w", pady=(3, 0))
+        card.freshness = self._txt(body, "", 10, FAINT, justify="left")
+        card.freshness.grid(row=2, column=0, sticky="w", pady=(3, 0))
+        # How many items of this workspace need attention; a click goes to the list below.
+        card.chip = ctk.CTkLabel(body, text="", corner_radius=8, height=22, cursor="hand2",
+                                 font=ctk.CTkFont("Segoe UI", 10, weight="bold"))
+        card.chip.grid(row=3, column=0, sticky="w", pady=(8, 0))
+        card.chip.bind("<Button-1>", lambda _e: self._scroll_to(self.attention_box), add="+")
+        for label in (card.context, card.freshness, card.chip):
+            label.grid_remove()
 
-        ctk.CTkFrame(card, fg_color="transparent", height=1).pack(fill="both", expand=True)
+        # Spacer that keeps the buttons on one line across a row of cards; padx keeps it off the card border.
+        ctk.CTkFrame(card, fg_color="transparent", height=1).pack(fill="both", expand=True, padx=2)
         foot = card.foot = ctk.CTkFrame(card, fg_color="transparent")
-        foot.pack(fill="x", padx=16, pady=(10, 12))
+        foot.pack(fill="x", padx=14, pady=(12, 12))
         button = ctk.CTkButton(
             foot, text=button_text, command=getattr(self, OPEN_METHOD[key]),
-            fg_color=BTN, hover_color=BTN_HV, text_color="#FFFFFF", text_color_disabled=MUTED,
-            height=34, corner_radius=9, border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+            fg_color=OPEN_BG, hover_color=OPEN_HV, text_color=BTN, text_color_disabled=MUTED,
+            height=32, corner_radius=8, border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
         )
         button.pack(side="left")
         self._focusable(button, page_widget=True)
@@ -753,11 +737,11 @@ class AutomationSuite(ctk.CTk):
     # ── Layout ────────────────────────────────────────────────────────────────
 
     def _layout(self, window_width):
-        """Cards 3-up on wide windows, 2-up on laptops, 1-up when narrow. Order never changes."""
+        """Workspace cards 4-up on very wide windows, 3-up on wide, 2-up on laptops, 1-up when narrow.
+        Order never changes."""
         content = max(420, int(window_width) - SIDEBAR_WIDTH - 70)
         self.content_width = content
-        columns = 3 if content >= 900 else 2 if content >= 560 else 1
-        tile_columns = 3 if content >= 640 else 2 if content >= 440 else 1
+        columns = 4 if content >= 1280 else 3 if content >= 860 else 2 if content >= 540 else 1
         visible_cards = [self._card_by_key[key] for key in self._allowed]
         if columns != self.columns:
             self.columns = columns
@@ -765,27 +749,18 @@ class AutomationSuite(ctk.CTk):
             if visible_cards:
                 self.no_workspace_note.grid_forget()
             else:
-                self.no_workspace_note.grid(row=0, column=0, columnspan=3, sticky="w", pady=(4, 8))
-        if tile_columns != self.tile_columns:
-            self.tile_columns = tile_columns
-            self._grid(self.tile_host, [self.tiles[key]["frame"] for key in self._allowed], tile_columns, gap=10)
-        card_text = (content - 14 * (columns - 1)) // columns - 40
-        tile_text = (content - 10 * (tile_columns - 1)) // tile_columns - 32
+                self.no_workspace_note.grid(row=0, column=0, columnspan=columns, sticky="w", pady=(4, 8))
+        card_text = (content - 14 * (columns - 1)) // columns - 30
         for card in self._cards:
-            card.title.configure(wraplength=max(140, card_text - 50))
-            for label in (card.description, card.outcome, card.updated):
+            card.title.configure(wraplength=max(140, card_text - 44))
+            for label in (card.headline, card.context, card.freshness):
                 label.configure(wraplength=max(160, card_text))
-        for tile in self.tiles.values():
-            tile["name"].configure(wraplength=max(120, tile_text - 30))
-            tile["headline"].configure(wraplength=max(150, tile_text))
-            tile["detail"].configure(wraplength=max(150, tile_text))
-        self.subtitle.configure(wraplength=max(400, content))
         self.footer_note.configure(wraplength=max(400, content - 20))
         self._place_attention_rows()
 
     @staticmethod
     def _grid(host, widgets, columns, gap):
-        for index in range(3):
+        for index in range(4):
             host.grid_columnconfigure(index, weight=1 if index < columns else 0,
                                       uniform="cells" if index < columns else "")
         for index, widget in enumerate(widgets):
@@ -801,7 +776,7 @@ class AutomationSuite(ctk.CTk):
         scale = ctk.ScalingTracker.get_window_scaling(self)
         width, height = event.width / scale, event.height / scale
         limit = 3 if height < 740 else 4
-        show_tagline = height >= 680  # the sidebar must not overflow on short windows
+        show_tagline = height >= 720  # the sidebar must not overflow on short windows
         if show_tagline != self._tagline_shown:
             self._tagline_shown = show_tagline
             if show_tagline:
@@ -874,23 +849,50 @@ class AutomationSuite(ctk.CTk):
             again, self._intel_again = self._intel_again, None
             self.refresh_intelligence(fetch_sir=again)
 
+    @staticmethod
+    def _show_text(label, text, color=None):
+        """Set a card line, hiding it when empty so cards have no blank gaps."""
+        label.configure(text=text, **({"text_color": color} if color else {}))
+        if text:
+            label.grid()
+        else:
+            label.grid_remove()
+
+    @staticmethod
+    def attention_chip(items):
+        """(text, severity) for a card's attention count, or None. Action outranks review, as in the list."""
+        actions = sum(1 for item in items if item.severity == home_intelligence.ACTION)
+        reviews = len(items) - actions
+        if not items:
+            return None
+        if actions:
+            text = f"{actions} need{'s' if actions == 1 else ''} action" + (f" · {reviews} to review" if reviews else "")
+            return text, home_intelligence.ACTION
+        return f"{reviews} to review", home_intelligence.REVIEW
+
     def render_intelligence(self):
         for key in home_intelligence.ORDER:
             intel = self.intel.get(key) if self.intel else None
-            tile, card = self.tiles[key], self._cards[home_intelligence.ORDER.index(key)]
+            card = self._card_by_key[key]
             if intel is None:
-                tile["headline"].configure(text="Loading saved results…", text_color=MUTED)
-                tile["detail"].configure(text="")
-                card.outcome.configure(text="Loading saved results…", text_color=MUTED)
-                card.updated.configure(text="")
+                self._show_text(card.headline, "Loading saved results…", MUTED)
+                self._show_text(card.context, "")
+                self._show_text(card.freshness, "")
+                card.chip.grid_remove()
                 continue
             # Non-normal states say so in words ("Not connected to Home", "Not yet processed",
             # "Could not read saved results"…), so colour is never the only signal.
             ok = intel.state == "ok"
-            tile["headline"].configure(text=intel.headline, text_color=INK if ok else STATE_INK)
-            tile["detail"].configure(text="\n".join(filter(None, (intel.context, intel.freshness))))
-            card.outcome.configure(text=intel.outcome, text_color=INK if ok else STATE_INK)
-            card.updated.configure(text=intel.updated)
+            self._show_text(card.headline, intel.headline, INK if ok else STATE_INK)
+            self._show_text(card.context, intel.context)
+            self._show_text(card.freshness, intel.freshness)
+            chip = self.attention_chip(intel.attention)
+            if chip is None:
+                card.chip.grid_remove()
+            else:
+                background, foreground, icon = SEVERITY_STYLE[chip[1]]
+                card.chip.configure(text=f"  {icon}  {chip[0]}  ", fg_color=background, text_color=foreground)
+                card.chip.grid()
         self._render_attention()
 
     # ── Running state ─────────────────────────────────────────────────────────
@@ -902,7 +904,7 @@ class AutomationSuite(ctk.CTk):
         button = getattr(self, BUTTON_ATTR[key], None)
         if button is not None:
             # An open workspace reads as "already open" (neutral), not as a dimmed primary action.
-            button.configure(fg_color=IDLE_BG if running else BTN, text_color_disabled=MUTED)
+            button.configure(fg_color=IDLE_BG if running else OPEN_BG, text_color_disabled=MUTED)
 
     # ── Widget helpers ────────────────────────────────────────────────────────
 
@@ -1327,7 +1329,6 @@ class AutomationSuite(ctk.CTk):
         added = [key for key in allowed if key not in self._allowed]
         for key in removed:
             self._card_by_key[key].grid_forget()
-            self.tiles[key]["frame"].grid_forget()
             row = self._nav_rows.pop(key, None)
             if row is not None:
                 row.pack_forget()
@@ -1336,7 +1337,7 @@ class AutomationSuite(ctk.CTk):
                 self.access.revoke_web(key, port)  # open browser tabs lose their session
         self._allowed = [key for key in self._allowed if key in allowed]
         if removed:
-            self.columns = self.tile_columns = None
+            self.columns = None
             self._layout(self._logical_width())
             self.refresh_intelligence()
         self._update_user_box()

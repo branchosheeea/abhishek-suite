@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import customtkinter as ctk
+
 from abhishek_automation_suite import (
     AutomationSuite,
     PROJECT_ROOT,
@@ -102,6 +104,34 @@ class SuiteLauncherTests(unittest.TestCase):
                 self.assertNotRegex(tile["headline"].cget("text"), r"^0\b")
             [message] = app.attention_box.winfo_children()
             self.assertIn("Not included because no completed result is available", message.cget("text"))
+        finally:
+            app.destroy()
+
+    def test_one_card_per_workspace_with_its_saved_result_and_attention_count(self):
+        app = AutomationSuite(access=FakeAccess(local_mode=True))
+        try:
+            review = home_intelligence.Attention(home_intelligence.REVIEW, "DHT X", "issue", "reason", "oil", "", "")
+            action = home_intelligence.Attention(home_intelligence.ACTION, "DHT Y", "issue", "reason", "oil", "", "")
+            intel = {key: home_intelligence.Intel(key, "none", "Not yet processed") for key in home_intelligence.ORDER}
+            intel["oil"] = home_intelligence.Intel("oil", "ok", "October 2026 sheets", "9 vessel sheets in use",
+                                                   "Processed 15 Nov", attention=[review, review, action])
+            app.intel = intel
+            app.render_intelligence()
+            app.update()
+            oil = app._card_by_key["oil"]
+            self.assertEqual((oil.headline.cget("text"), oil.context.cget("text")), ("October 2026 sheets", "9 vessel sheets in use"))
+            self.assertIn("1 needs action · 2 to review", oil.chip.cget("text"))
+            self.assertEqual(oil.chip.winfo_manager(), "grid")
+            vessel = app._card_by_key["vessel"]
+            self.assertEqual(vessel.chip.winfo_manager(), "")  # nothing to count: no chip
+            self.assertEqual(vessel.context.winfo_manager(), "")  # empty lines are hidden, not blank gaps
+            self.assertFalse(hasattr(app, "tile_host"))  # no second box per workspace any more
+            self.assertEqual(app.tiles["oil"]["frame"], oil)
+            # The header stays compact in local mode (no empty button row stretching it).
+            scale = ctk.ScalingTracker.get_widget_scaling(app)
+            self.assertLess(app.user_box.winfo_reqheight() / scale, 80)
+            self.assertEqual(AutomationSuite.attention_chip([]), None)
+            self.assertEqual(AutomationSuite.attention_chip([review]), ("1 to review", home_intelligence.REVIEW))
         finally:
             app.destroy()
 

@@ -1,5 +1,6 @@
 "use client"
 
+import { REPORT_BANNER } from "@/lib/export/brand"
 import { formatTime } from "../api"
 import { Banner, Card, Empty, Pill } from "../ui"
 import type { Ctx } from "./types"
@@ -8,7 +9,7 @@ export function Reports({ ctx }: { ctx: Ctx }) {
   const completed = ctx.data.runs.filter((r) => r.state === "completed")
   return (
     <div className="flex flex-col gap-5">
-      <Banner tone="info" title="NERAVEDA DIAGNOSTIC REPORT — NOT AN OFFICIAL VESSEL REPORTING FILE">
+      <Banner tone="info" title={REPORT_BANNER}>
         Reports describe findings about the reporting files: source file names and SHA-256 hashes, rule and schema versions, DNV items, exact source
         references, calculations, evidence classes, possible causes, recommended checks, investigation status and known limitations. They are never in a
         Log Abstract, Bunker Report or OVD format, and no corrected reporting file can be generated.
