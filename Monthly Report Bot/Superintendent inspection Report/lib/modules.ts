@@ -4,6 +4,8 @@
 
 export type WebModule = {
   id: string
+  /** The NeraVeda right needed to use it (suite_services/access/entitlements.py MODULES). */
+  right: string
   href: string
   title: string
   navLabel: string
@@ -18,6 +20,7 @@ export type WebModule = {
 export const WEB_MODULES: WebModule[] = [
   {
     id: "inspections",
+    right: "sir",
     href: "/inspections",
     title: "Superintendent Inspection Report",
     navLabel: "Inspection Reports",
@@ -28,7 +31,25 @@ export const WEB_MODULES: WebModule[] = [
     accent: "#0E6E8C",
     tint: "#E2F2F7",
   },
+  {
+    id: "docking",
+    right: "dd",
+    href: "/docking",
+    title: "Digital Docking",
+    navLabel: "Digital Docking",
+    badge: "DD",
+    eyebrow: "DRY DOCKING · WORKSPACE 08",
+    description: "Docking records, reporting days, jobs and Superintendent notes. Vessel files are never changed.",
+    cta: "Open Digital Docking",
+    accent: "#5B4A9E",
+    tint: "#EEEBF8",
+  },
 ]
+
+/** The workspaces this person may use (all of them when the session is not known, e.g. offline). */
+export function modulesFor(rights: readonly string[] | undefined): WebModule[] {
+  return rights ? WEB_MODULES.filter((m) => rights.includes(m.right)) : WEB_MODULES
+}
 
 export function moduleForPath(pathname: string) {
   return WEB_MODULES.find((m) => pathname === m.href || pathname.startsWith(`${m.href}/`))

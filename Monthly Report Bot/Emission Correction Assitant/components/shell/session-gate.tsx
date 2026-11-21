@@ -39,7 +39,10 @@ export function SessionGate({ children }: { children: ReactNode }) {
 
   return (
     <UserContext.Provider value={user}>
-      {children}
+      {/* The real protection is on the server (proxy.ts for pages, route() for data); this only avoids showing the
+          app before the session is confirmed. */}
+      {state === "ok" && children}
+      {state === "checking" && <p role="status" className="p-6 text-center text-sm text-muted-foreground">Checking your NeraVeda session…</p>}
       {state === "locked" && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-background/95 p-4" role="alertdialog" aria-modal="true" aria-labelledby="locked-title">
           <div className="w-full max-w-md rounded-xl border bg-card p-6 shadow-xl">

@@ -29,11 +29,11 @@ from pathlib import Path
 
 from suite_services.storage import runtime_root
 
-ORDER = ("vessel", "oil", "voyage", "gc", "cjc", "sir", "evi")
+ORDER = ("vessel", "oil", "voyage", "gc", "cjc", "sir", "evi", "dd")
 NAMES = {
     "vessel": "Vessel Report Centre", "oil": "Lub Oil Review", "voyage": "Voyage Summary",
     "gc": "Guarantee Claims", "cjc": "Critical Jobs", "sir": "Superintendent Inspection",
-    "evi": "Emissions Validation",
+    "evi": "Emissions Validation", "dd": "Digital Docking",
 }
 ACTION, REVIEW = "action", "review"
 SEVERITY_LABEL = {ACTION: "Action required", REVIEW: "Review required"}
@@ -151,6 +151,12 @@ def vessel_report_intel(root=None, today=None):
     return Intel("vessel", "not_connected", "Not connected to Home",
                  "Collection results are kept only while its window is open",
                  outcome="Collection results are not saved for Home yet")
+
+
+def docking_intel(root=None, today=None):
+    return Intel("dd", "not_connected", "Not connected to Home",
+                 "Docking records are kept by the web workspace; Home does not read them yet",
+                 outcome="No docking summary for Home yet")
 
 
 def voyage_intel(root=None, today=None):
@@ -498,7 +504,7 @@ def evi_intel(root=None, today=None):
 
 PROVIDERS = {
     "vessel": vessel_report_intel, "oil": lube_intel, "voyage": voyage_intel,
-    "gc": gc_intel, "cjc": cjc_intel, "sir": sir_intel, "evi": evi_intel,
+    "gc": gc_intel, "cjc": cjc_intel, "sir": sir_intel, "evi": evi_intel, "dd": docking_intel,
 }
 
 

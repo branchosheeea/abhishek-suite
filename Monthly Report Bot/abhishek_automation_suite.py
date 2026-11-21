@@ -66,6 +66,7 @@ _MOD: dict[str, dict] = {
     "cjc":    {"accent": "#B03A2E", "tint": "#FBECEA", "badge": "CJC"},
     "sir":    {"accent": "#0E6E8C", "tint": "#E2F2F7", "badge": "SIR"},
     "evi":    {"accent": "#2F6B4F", "tint": "#E9F1EC", "badge": "EVI"},
+    "dd":     {"accent": "#5B4A9E", "tint": "#EEEBF8", "badge": "DD"},
 }
 
 CJC_FOLDER = "Critical Jobs Compliance"
@@ -141,16 +142,22 @@ WORKSPACES = (
     ("evi", "EMISSIONS REPORTING", "07", "DNV Emissions Validation",
      "Read-only validation and investigation of DNV emissions reporting. Original files are never changed.",
      "Open Emissions Validation", "Emissions Validation"),
+    ("dd", "DRY DOCKING", "08", "Digital Docking",
+     "Docking records, daily vessel reports, jobs and Superintendent notes. Vessel files are never changed.",
+     "Open Digital Docking", "Digital Docking"),
 )
 TITLES = {key: title for key, _e, _n, title, *_ in WORKSPACES}
 OPEN_METHOD = {"vessel": "open_project", "oil": "open_lub_oil", "voyage": "open_voyage_summary",
                "gc": "open_gc_manager", "cjc": "open_critical_jobs", "sir": "open_inspection_reports",
-               "evi": "open_emissions_validation"}
+               "evi": "open_emissions_validation", "dd": "open_digital_docking"}
 BUTTON_ATTR = {"vessel": "launch_button", "oil": "oil_button", "voyage": "voyage_button", "gc": "gc_button",
-               "cjc": "cjc_button", "sir": "sir_button", "evi": "evi_button"}
+               "cjc": "cjc_button", "sir": "sir_button", "evi": "evi_button", "dd": "dd_button"}
 PROCESS_ATTR = {"vessel": "project_process", "oil": "lub_process", "voyage": "voyage_process",
-                "gc": "gc_process", "cjc": "cjc_process", "sir": "sir_process", "evi": "evi_process"}
-WEB_WORKSPACES = ("sir", "evi")  # served by a local web server; the card button stays usable while running
+                "gc": "gc_process", "cjc": "cjc_process", "sir": "sir_process", "evi": "evi_process",
+                "dd": "sir_process"}
+WEB_WORKSPACES = ("sir", "evi", "dd")  # served by a local web server; the card button stays usable while running
+#: The web server of each web workspace: Digital Docking runs in the same web shell (and server) as Inspection Reports.
+WEB_SERVER = {"sir": "sir", "evi": "evi", "dd": "sir"}
 
 SIR_LOG = PROJECT_ROOT / "diagnostics" / "superintendent_inspection_server.log"
 EVI_LOG = PROJECT_ROOT / "diagnostics" / "emissions_validation_server.log"
@@ -661,8 +668,9 @@ class AutomationSuite(ctk.CTk):
         self._cjc_card, self.cjc_button = cards["cjc"]
         self._sir_card, self.sir_button = cards["sir"]
         self._evi_card, self.evi_button = cards["evi"]
+        self._dd_card, self.dd_button = cards["dd"]
         self._cards = [self._vessel_card, self._oil_card, self._voyage_card, self._gc_card, self._cjc_card,
-                       self._sir_card, self._evi_card]
+                       self._sir_card, self._evi_card, self._dd_card]
         self._card_by_key = {key: card for key, (card, _button) in cards.items()}
         self.no_workspace_note = self._txt(
             self.grid_host, "No workspace is assigned to you yet. Ask your NeraVeda admin to add the workspaces you need.",
@@ -1094,8 +1102,21 @@ class AutomationSuite(ctk.CTk):
 
     @_requires("sir")
     def open_inspection_reports(self, path=None):
+        self._open_shell("/" + (path or inspection_server.INSPECTIONS_PATH).lstrip("/"))
+
+    @_requires("dd")
+    def open_digital_docking(self, path=None):
+        self._open_shell("/" + (path or "docking").lstrip("/"))
+
+    def _shell_buttons(self, state, starting=False):
+        """The web shell's server serves Inspection Reports and Digital Docking: both cards show its state."""
+        self.sir_button.configure(state=state, text="Starting server…" if starting else (
+            "Open in browser" if self.sir_mode is not None else "Open Inspection Reports"))
+        self.dd_button.configure(state=state, text="Starting server…" if starting else "Open Digital Docking")
+
+    def _open_shell(self, target):
+        """Open a page of the NeraVeda web shell, starting its server if needed (callers check the person's right)."""
         port = inspection_server.server_port()
-        target = "/" + (path or inspection_server.INSPECTIONS_PATH).lstrip("/")
         if self.sir_process is not None and self.sir_process.poll() is None:
             if self.sir_mode is not None:  # already serving: open another browser tab
                 self._open_web("sir", port, target)
@@ -1127,7 +1148,7 @@ class AutomationSuite(ctk.CTk):
             return
         self.sir_mode = None
         self.sir_target, self.sir_port = target, port
-        self.sir_button.configure(state="disabled", text="Starting server…")
+        self._shell_buttons("disabled", starting=True)
         process = self.sir_process
 
         def wait():
@@ -1152,9 +1173,10 @@ class AutomationSuite(ctk.CTk):
                 f"The local server did not become ready.\n\nDetails: {SIR_LOG}", parent=self)
             return
         self.sir_mode = mode
-        self.sir_button.configure(state="normal", text="Open in browser")
+        self._shell_buttons("normal")
         self.sir_stop_button.pack(side="left", padx=(10, 0))
         self._set_running("sir", True)
+        self._set_running("dd", True)
         # The entry ticket is minted now, not when the button was pressed: a first start can take minutes.
         self._open_web("sir", self.sir_port or inspection_server.server_port(), self.sir_target)
         self.refresh_intelligence(fetch_sir=True)
@@ -1182,9 +1204,10 @@ class AutomationSuite(ctk.CTk):
 
     def _reset_sir(self):
         self.sir_mode = None
-        self.sir_button.configure(state="normal", text="Open Inspection Reports")
+        self._shell_buttons("normal")
         self.sir_stop_button.pack_forget()
         self._set_running("sir", False)
+        self._set_running("dd", False)
 
     # ── DNV Emissions Validation (local web server, port 3001) ──────────────────
 
@@ -1333,8 +1356,9 @@ class AutomationSuite(ctk.CTk):
             if row is not None:
                 row.pack_forget()
             if key in WEB_WORKSPACES:
-                port = inspection_server.server_port() if key == "sir" else emissions_server.server_port()
-                self.access.revoke_web(key, port)  # open browser tabs lose their session
+                server = WEB_SERVER[key]
+                port = inspection_server.server_port() if server == "sir" else emissions_server.server_port()
+                self.access.revoke_web(server, port)  # open browser tabs of that server lose their session
         self._allowed = [key for key in self._allowed if key in allowed]
         if removed:
             self.columns = None

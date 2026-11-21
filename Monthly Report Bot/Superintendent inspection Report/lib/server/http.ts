@@ -3,7 +3,7 @@
 // Same rules as the Emissions Validation app (Emission Correction Assitant/lib/server/http.ts).
 
 import { authenticate, type AuthMode, withUser } from "./auth"
-import { AppError } from "./errors"
+import { AppError, SESSION_HEADER, SessionError } from "./errors"
 
 export const CSRF_HEADER = "x-neraveda-request"
 
@@ -49,6 +49,11 @@ export function json(data: unknown, status = 200): Response {
 }
 
 export function errorResponse(error: unknown): Response {
+  if (error instanceof SessionError) {
+    const res = json({ error: error.message }, error.status)
+    res.headers.set(SESSION_HEADER, "ended")
+    return res
+  }
   if (error instanceof AppError) return json({ error: error.message }, error.status)
   console.error("[inspections] unexpected error:", error)
   return json({ error: "Internal error. Details are in the server log." }, 500)
@@ -57,12 +62,12 @@ export function errorResponse(error: unknown): Response {
 type Handler<C> = (req: Request, ctx: C) => Promise<Response>
 
 /** Guard, rate limit, NeraVeda session (default: the signed-in person's cookie), safe errors. */
-export function route<C>(options: { mutating: boolean; limit?: [string, number]; auth?: AuthMode }, fn: Handler<C>): Handler<C> {
+export function route<C>(options: { mutating: boolean; limit?: [string, number]; auth?: AuthMode; module?: string }, fn: Handler<C>): Handler<C> {
   return async (req, ctx) => {
     try {
       guard(req, options.mutating)
       if (options.limit) rateLimit(options.limit[0], options.limit[1])
-      const claims = authenticate(req, options.auth ?? "user")
+      const claims = authenticate(req, options.auth ?? "user", options.module)
       return await withUser(claims, () => fn(req, ctx))
     } catch (error) {
       return errorResponse(error)

@@ -34,6 +34,9 @@ FREE_ATTEMPTS, FIRST_LOCK_SECONDS, MAX_LOCK_SECONDS, ATTEMPT_WINDOW_SECONDS = 5,
 
 SESSION_PURPOSE = "session"
 WEB_KEYS = ("sir", "evi")
+#: Workspaces served by each web server: its tickets carry the person's rights to all of them (Digital Docking
+#: runs in the same web shell as the Inspection Reports, key "sir"). Each page and API route checks its own.
+SERVER_MODULES = {"sir": ("sir", "dd"), "evi": ("evi",)}
 #: Environment variables each web workspace may receive from the protected store (Phase 5).
 DB_VARS = {
     "sir": ("MONGODB_URI",),
@@ -426,7 +429,7 @@ class AccessService:
             raise SessionExpired("Sign in to NeraVeda first.")
         s = self.session
         return tickets.mint(self.web_secret(key), typ, key, s.email, name=s.name, adm=s.admin and s.mode in SIGNED_IN_MODES,
-                            grants=[Grant(key).to_document()] if key in s.modules else [], ttl=ttl, now=self.clock())
+                            grants=[Grant(m).to_document() for m in SERVER_MODULES[key] if m in s.modules], ttl=ttl, now=self.clock())
 
     def web_entry_url(self, key: str, port: int, path: str) -> str:
         path = path if path.startswith("/") else f"/{path}"

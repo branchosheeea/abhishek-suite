@@ -83,8 +83,9 @@ class SuiteLauncherTests(unittest.TestCase):
     def test_inspection_report_is_workspace_six(self):
         app = AutomationSuite(access=FakeAccess())
         try:
-            self.assertEqual(len(app._cards), 7)  # 07 is DNV Emissions Validation
+            self.assertEqual(len(app._cards), 8)  # 07 is DNV Emissions Validation, 08 Digital Docking
             self.assertEqual(app.sir_button.cget("text"), "Open Inspection Reports")
+            self.assertEqual(app.dd_button.cget("text"), "Open Digital Docking")
             self.assertEqual(app.title(), "NeraVeda")
             self.assertEqual(list(app.tiles), list(home_intelligence.ORDER))
         finally:

@@ -4,7 +4,7 @@ import { House } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import type { ReactNode } from "react"
-import { WEB_MODULES, moduleForPath, type WebModule } from "@/lib/modules"
+import { moduleForPath, modulesFor, type WebModule } from "@/lib/modules"
 import { cn } from "@/lib/utils"
 import { SessionGate, useNeraVedaUser } from "./session-gate"
 
@@ -22,6 +22,7 @@ function Shell({ children }: { children: ReactNode }) {
   const current = moduleForPath(pathname)
   const onHome = pathname === "/"
   const user = useNeraVedaUser()
+  const modules = modulesFor(user?.modules)
 
   return (
     <div className="flex min-h-dvh flex-col xl:flex-row">
@@ -37,7 +38,7 @@ function Shell({ children }: { children: ReactNode }) {
         <p className="px-6 pb-2 text-[11px] font-bold tracking-wider text-shell-muted">WORKSPACES</p>
         <nav aria-label="NeraVeda workspaces" className="flex flex-col gap-0.5 px-3">
           <SideLink href="/" label="Home" active={onHome} badge={<House className="size-4" aria-hidden />} />
-          {WEB_MODULES.map((m) => (
+          {modules.map((m) => (
             <SideLink key={m.id} href={m.href} label={m.navLabel} active={current?.id === m.id} badge={<ModuleBadge module={m} />} />
           ))}
         </nav>
@@ -69,7 +70,7 @@ function Shell({ children }: { children: ReactNode }) {
           <TopLink href="/" active={onHome}>
             Home
           </TopLink>
-          {WEB_MODULES.map((m) => (
+          {modules.map((m) => (
             <TopLink key={m.id} href={m.href} active={current?.id === m.id}>
               {m.navLabel}
             </TopLink>

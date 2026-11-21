@@ -8,6 +8,9 @@
   bootstrap --email E --name N [--password]
                          create the first admin (admin PC only; refused once an admin exists); --password also sets
                          your own NeraVeda password, needed when this PC has no Microsoft sign-in
+  reset-password --email E [--temporary]
+                         admin PC only: reset a NeraVeda password (typed twice, hidden), or print a temporary one;
+                         for when nobody who is an admin can sign in. Audited; ends that person's sessions
   whoami                 who is signed in on this PC and to what (no tokens)
   webcheck sir|evi       end-to-end checks of a running web workspace's access control
 """
@@ -193,6 +196,51 @@ def cmd_bootstrap(args) -> int:
     return 0
 
 
+def cmd_reset_password(args) -> int:
+    """Reset a NeraVeda password with this PC's admin connection (for when no admin can sign in)."""
+    c = cfg.load_config()
+    if not c.admin_uri:
+        print("This PC has no admin connection. Run: python -m suite_services.access setup --admin")
+        return 2
+    from suite_services import actor
+    from suite_services.access import passwords
+    from suite_services.access.entitlements import normalise_email
+    from suite_services.access.store import AccessStore, AccessStoreError
+    try:
+        email = normalise_email(args.email)
+    except ValueError as error:
+        print(error)
+        return 2
+    if args.temporary:
+        password = passwords.generate_temporary()
+    else:
+        password = getpass.getpass(f"New NeraVeda password for {email} (hidden): ")
+        if password != getpass.getpass("Again: "):
+            print("The two passwords do not match. Nothing was changed.")
+            return 2
+        found = passwords.problems(password, email)
+        if found:
+            print("Not accepted: " + " ".join(found))
+            return 2
+    # Nobody is signed in, so the actor is this admin PC's Windows user; the audit also keeps the database user and host.
+    by = {"email": f"admin-pc:{actor.windows_user()}", "oid": None, "name": "reset-password command"}
+    store = AccessStore(c.admin_uri, c.db_name, c.dns_servers)
+    try:
+        store.reset_password(by, email, passwords.new_verifier(password)[0], temporary=args.temporary,
+                             reason="password reset with the admin connection (python -m suite_services.access reset-password)")
+    except AccessStoreError as error:
+        print(f"Not changed: {error}")
+        return 2
+    finally:
+        store.close()
+    if args.temporary:
+        print(f"Temporary password for {email}: {password}")
+        print("Give it to the person privately; they choose their own password at the next sign-in.")
+    else:
+        print(f"Password reset for {email}. Sign in with it now; any other PC signed in as {email} must sign in again.")
+    return 0
+
+
 def cmd_whoami(_args) -> int:
     c = cfg.load_config()
     if c.local_mode:
@@ -275,6 +323,10 @@ def main(argv=None) -> int:
     p.add_argument("--name", required=True)
     p.add_argument("--password", action="store_true", help="also set your own NeraVeda password")
     p.set_defaults(func=cmd_bootstrap)
+    p = sub.add_parser("reset-password")
+    p.add_argument("--email", required=True)
+    p.add_argument("--temporary", action="store_true", help="generate a temporary password instead of typing one")
+    p.set_defaults(func=cmd_reset_password)
     sub.add_parser("whoami").set_defaults(func=cmd_whoami)
     p = sub.add_parser("webcheck")
     p.add_argument("key", choices=["sir", "evi"])

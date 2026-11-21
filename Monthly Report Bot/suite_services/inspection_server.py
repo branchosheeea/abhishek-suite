@@ -23,7 +23,7 @@ HOST = "127.0.0.1"  # local only; every API request also needs the session NeraV
 HEALTH_MARKER = '"neraveda-web"'  # returned by /api/health
 LEGACY_MARKER = "SIR Inspect"  # manifest of builds from before the web shell
 INSPECTIONS_PATH = "inspections"
-SOURCE_ENTRIES = ("app", "components", "hooks", "lib", "public",
+SOURCE_ENTRIES = ("app", "components", "hooks", "lib", "public", "proxy.ts",
                   "next.config.mjs", "package.json", "postcss.config.mjs", "tsconfig.json")
 
 

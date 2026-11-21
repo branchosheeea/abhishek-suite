@@ -9,11 +9,11 @@ from dataclasses import dataclass, field, replace
 from typing import Iterable
 
 #: Workspace keys, in launcher order (abhishek_automation_suite.WORKSPACES).
-MODULES: tuple[str, ...] = ("vessel", "oil", "voyage", "gc", "cjc", "sir", "evi")
+MODULES: tuple[str, ...] = ("vessel", "oil", "voyage", "gc", "cjc", "sir", "evi", "dd")
 MODULE_TITLES: dict[str, str] = {
     "vessel": "Vessel Report Centre", "oil": "Lub Oil Consumption Review", "voyage": "Voyage Summary",
     "gc": "Guarantee Claim Manager", "cjc": "Critical Job Compliance", "sir": "Superintendent Inspection Report",
-    "evi": "DNV Emissions Validation",
+    "evi": "DNV Emissions Validation", "dd": "Digital Docking",
 }
 ROLES: tuple[str, ...] = ("use",)
 

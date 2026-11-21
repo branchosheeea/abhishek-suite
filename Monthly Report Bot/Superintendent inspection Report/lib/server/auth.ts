@@ -5,17 +5,24 @@
 // workspace refuses all API requests: it must be opened from NeraVeda.
 //
 // Ticket format (identical in suite_services/access/tickets.py):  nv1.<b64url(json)>.<b64url(HMAC-SHA256)>
-// KEEP IN SYNC with "Emission Correction Assitant/lib/server/auth.ts" (only APP, COOKIE and DEFAULT_NEXT differ).
+// KEEP IN SYNC with "Emission Correction Assitant/lib/server/auth.ts" (only APP, COOKIE, DEFAULT_NEXT, MODULES and PAGE_MODULES differ).
 // No Next.js imports, so it can be tested directly.
 
 import { AsyncLocalStorage } from "node:async_hooks"
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto"
-import { AppError } from "./errors"
+import { AppError, SessionError } from "./errors"
 
 export const APP = "sir"
 export const COOKIE = "neraveda_sir"
 export const DEFAULT_NEXT = "/inspections"
 export const SERVICE_HEADER = "x-neraveda-service"
+/** The workspaces this server hosts. A session is valid with the right to any of them; each page and API route then
+ *  needs the right to its own workspace (route({ module }), PAGE_MODULES). APP is the default. */
+export const MODULES: readonly string[] = ["sir", "dd"]
+/** Which workspace a page belongs to, by path prefix (first match). Other pages (e.g. the home page) need any of MODULES. */
+/** For routes any workspace of this server may use (e.g. the session check behind the shell). */
+export const ANY_MODULE = ""
+export const PAGE_MODULES: readonly (readonly [string, string])[] = [["/docking", "dd"], ["/inspections", "sir"]]
 const SESSION_SECONDS = 12 * 3600
 
 export type Grant = Readonly<{ module: string; role: string }>
@@ -44,19 +51,19 @@ export function sign(key: string, claims: Claims): string {
 
 export function verify(key: string, token: string | null | undefined, typ: Claims["typ"], aud: string, now = nowSeconds()): Claims {
   const parts = (token ?? "").split(".")
-  if (parts.length !== 3 || parts[0] !== "nv1") throw new AppError(401, "Malformed NeraVeda ticket.")
+  if (parts.length !== 3 || parts[0] !== "nv1") throw new SessionError(401, "Malformed NeraVeda ticket.")
   const expected = createHmac("sha256", Buffer.from(key, "ascii")).update(`${parts[0]}.${parts[1]}`, "ascii").digest()
   const given = fromB64url(parts[2])
-  if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new AppError(401, "Invalid NeraVeda ticket.")
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new SessionError(401, "Invalid NeraVeda ticket.")
   let claims: Claims
   try {
     claims = JSON.parse(fromB64url(parts[1]).toString("utf8")) as Claims
   } catch {
-    throw new AppError(401, "Malformed NeraVeda ticket.")
+    throw new SessionError(401, "Malformed NeraVeda ticket.")
   }
-  if (!claims || claims.typ !== typ || claims.aud !== aud) throw new AppError(401, "This ticket is not for this workspace.")
-  if (!Number.isInteger(claims.exp) || claims.exp < now) throw new AppError(401, "Your NeraVeda session has expired. Open the workspace again from NeraVeda.")
-  if (typeof claims.sub !== "string" || !claims.sub) throw new AppError(401, "Invalid NeraVeda ticket.")
+  if (!claims || claims.typ !== typ || claims.aud !== aud) throw new SessionError(401, "This ticket is not for this workspace.")
+  if (!Number.isInteger(claims.exp) || claims.exp < now) throw new SessionError(401, "Your NeraVeda session has expired. Open the workspace again from NeraVeda.")
+  if (typeof claims.sub !== "string" || !claims.sub) throw new SessionError(401, "Invalid NeraVeda ticket.")
   return claims
 }
 
@@ -74,17 +81,42 @@ function cookie(req: Request, name: string): string | null {
 }
 
 /** The person behind a request, or an error response (401/403/503). */
-export function authenticate(req: Request, mode: AuthMode): Claims | null {
+export function authenticate(req: Request, mode: AuthMode, module: string = APP): Claims | null {
   if (mode === "none") return null
   const key = secret()
-  if (!key) throw new AppError(503, "This workspace must be opened from NeraVeda.")
+  if (!key) throw new SessionError(503, "This workspace must be opened from NeraVeda.")
   const service = req.headers.get(SERVICE_HEADER)
   if (mode !== "user" && service) return verify(key, service, "service", APP)
-  if (mode === "service") throw new AppError(401, "A NeraVeda service ticket is required.")
+  if (mode === "service") throw new SessionError(401, "A NeraVeda service ticket is required.")
+  return sessionClaims(key, req, module)
+}
+
+/** This workspace's session cookie, verified: signed by this run's secret, not expired or revoked, with the grant. */
+function sessionClaims(key: string, req: Request, module?: string): Claims {
   const claims = verify(key, cookie(req, COOKIE), "session", APP)
-  if (claims.iat <= notBefore()) throw new AppError(401, "Your NeraVeda session has ended. Open the workspace again from NeraVeda.")
-  if (!claims.grants.some((g) => g.module === APP)) throw new AppError(403, "You do not have access to this workspace.")
+  if (claims.iat <= notBefore()) throw new SessionError(401, "Your NeraVeda session has ended. Open the workspace again from NeraVeda.")
+  const needed = module ? [module] : MODULES
+  if (!claims.grants.some((g) => needed.includes(g.module))) throw new SessionError(403, "You do not have access to this workspace.")
   return claims
+}
+
+/**
+ * Page requests (proxy.ts): the app's pages are sent only with a valid session, so a tab that was not opened from
+ * NeraVeda gets an explanation page, not an app whose lock screen could be removed in the browser's developer tools.
+ * null = allowed. The API routes check the session themselves on every request (route()).
+ */
+export function pageGate(req: Request): Response | null {
+  const key = secret()
+  if (!key) return page(503, "Open from NeraVeda", "This workspace was not started by NeraVeda. Open it from the NeraVeda home screen.")
+  try {
+    const path = new URL(req.url).pathname
+    const owner = PAGE_MODULES.find(([prefix]) => path === prefix || path.startsWith(`${prefix}/`))
+    sessionClaims(key, req, owner?.[1])
+    return null
+  } catch (error) {
+    if (error instanceof AppError && error.status === 403) return page(403, "No access", "You do not have access to this workspace. Ask your NeraVeda admin.")
+    return page(401, "Open from NeraVeda", "Your NeraVeda session has ended, or this tab was not opened from NeraVeda. Open the workspace again from the NeraVeda home screen.")
+  }
 }
 
 const users = new AsyncLocalStorage<Claims | null>()
@@ -122,7 +154,7 @@ export function handleEnter(req: Request): Response {
   } catch {
     return page(401, "Sign-in link expired", "This link has expired or is not valid. Open the workspace again from NeraVeda.")
   }
-  if (!ticket.grants.some((g) => g.module === APP)) return page(403, "No access", "You do not have access to this workspace. Ask your NeraVeda admin.")
+  if (!ticket.grants.some((g) => MODULES.includes(g.module))) return page(403, "No access", "You do not have access to this workspace. Ask your NeraVeda admin.")
   const issued = Math.max(nowSeconds(), notBefore() + 1)
   const session = sign(key, { ...ticket, typ: "session", iat: issued, exp: issued + SESSION_SECONDS, jti: randomBytes(8).toString("hex") })
   return new Response(null, {
@@ -138,7 +170,9 @@ export function handleEnter(req: Request): Response {
 }
 
 export function sessionInfo(claims: Claims | null) {
-  return claims ? { app: APP, sub: claims.sub, name: claims.name, admin: claims.adm, via: claims.typ } : null
+  return claims
+    ? { app: APP, sub: claims.sub, name: claims.name, admin: claims.adm, via: claims.typ, modules: claims.grants.map((g) => g.module).filter((m) => MODULES.includes(m)) }
+    : null
 }
 
 /** POST /api/auth/revoke (service ticket): end every browser session issued so far. */

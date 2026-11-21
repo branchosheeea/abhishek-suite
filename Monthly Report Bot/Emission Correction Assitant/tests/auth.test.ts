@@ -4,7 +4,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
 import { afterEach, beforeEach, describe, test } from "node:test"
 import { fileURLToPath } from "node:url"
-import { APP, type Claims, COOKIE, currentUser, handleEnter, revokeAll, safeNext, sign, verify } from "../lib/server/auth"
+import { APP, type Claims, COOKIE, currentUser, handleEnter, pageGate, revokeAll, safeNext, sign, verify } from "../lib/server/auth"
+import { AppError, SESSION_HEADER } from "../lib/server/errors"
 import { json, route } from "../lib/server/http"
 
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..")
@@ -73,6 +74,19 @@ describe("route() requires the NeraVeda session", () => {
     assert.equal((await call(echo(), { cookie: session() })).status, 503)
   })
 
+  test("only session errors are marked as such; a database outage is not mistaken for an ended session", async () => {
+    const noCookie = await call(echo())
+    assert.equal(noCookie.headers.get(SESSION_HEADER), "ended")
+    assert.equal((await call(echo(), { cookie: session({ grants: [{ module: "other", role: "use" }] }) })).headers.get(SESSION_HEADER), "ended")
+    delete process.env.NERAVEDA_WEB_SECRET
+    assert.equal((await call(echo(), { cookie: session() })).headers.get(SESSION_HEADER), "ended") // 503: not opened from NeraVeda
+    process.env.NERAVEDA_WEB_SECRET = SECRET
+    const dbDown = route({ mutating: false }, async () => { throw new AppError(503, "The database could not be reached.") })
+    const res = await call(dbDown, { cookie: session() })
+    assert.equal(res.status, 503)
+    assert.equal(res.headers.get(SESSION_HEADER), null)
+  })
+
   test("a session without this workspace's grant is refused", async () => {
     assert.equal((await call(echo(), { cookie: session({ grants: [{ module: "sir", role: "use" }] }) })).status, 403)
   })
@@ -115,5 +129,39 @@ describe("static: every API route goes through route()", () => {
       assert.ok(/=\s*route[<(]/.test(text), `${rel} does not use route()`)
       assert.ok(!/export\s+(async\s+)?function\s+(GET|POST|PUT|PATCH)\b/.test(text), `${rel} exports a bare handler`)
     }
+  })
+})
+
+describe("pages are sent only with a NeraVeda session (proxy.ts)", () => {
+  const PAGES = ["/", "/sessions", "/sessions/abc"]
+  const page = (cookie?: string) => new Request(`http://localhost:3001${PAGES[1]}`, { headers: { ...HOST, ...(cookie ? { cookie } : {}) } })
+  // Issued a second ahead, as handleEnter does after a revoke (an earlier test revokes everything issued so far).
+  const session = (over: Partial<Claims> = {}) => `${COOKIE}=${sign(SECRET, claims({ typ: "session", iat: now() + 1, ...over }))}`
+
+  test("no, tampered, expired, revoked or other-workspace cookies get an explanation page instead of the app", () => {
+    assert.equal(pageGate(page(session())), null)
+    const refused = pageGate(page())!
+    assert.equal(refused.status, 401)
+    assert.match(refused.headers.get("content-type")!, /^text\/html/)
+    assert.equal(refused.headers.get("cache-control"), "no-store") // the service worker caches only 200s
+    for (const cookie of [`${COOKIE}=${sign("cd".repeat(32), claims({ typ: "session" }))}`, session({ exp: now() - 1 }), session({ typ: "enter" }), `${COOKIE}=nv1.x.y`])
+      assert.equal(pageGate(page(cookie))!.status, 401, cookie)
+    assert.equal(pageGate(page(session({ grants: [{ module: "other", role: "use" }] })))!.status, 403)
+    const old = session({ iat: now() - 5 })
+    revokeAll()
+    assert.equal(pageGate(page(old))!.status, 401)
+    delete process.env.NERAVEDA_WEB_SECRET
+    assert.equal(pageGate(page(session()))!.status, 503)
+  })
+
+  test("the proxy gates every page and leaves only the API, build assets and public files to themselves", () => {
+    const source = readFileSync(join(ROOT, "proxy.ts"), "utf8")
+    assert.match(source, /return pageGate\(request\) \?\? NextResponse\.next\(\)/)
+    const literal = /matcher:\s*\[\s*("(?:[^"\\]|\\.)*")\s*\]/.exec(source)
+    assert.ok(literal, "proxy.ts needs exactly one matcher string")
+    const matcher = new RegExp(`^${JSON.parse(literal[1])}$`)
+    for (const path of [...PAGES, "/anything/new"]) assert.ok(matcher.test(path), `${path} must be gated`)
+    for (const path of ["/api/auth/enter", "/api/x", "/_next/static/chunks/app.js", "/sw.js", "/icon.svg", "/manifest.webmanifest"])
+      assert.ok(!matcher.test(path), `${path} must not be gated`)
   })
 })

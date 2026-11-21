@@ -455,6 +455,16 @@ class PasswordSessionTests(FastPasswords, TempRuntime):
             self.service(store).sign_in_with_password("alice@x.com", "attacker chosen pw")
         self.assertEqual(self.service(store).sign_in_with_password("alice@x.com", "Temp-Pass-1234").mode, "password")
 
+    def test_web_shell_tickets_carry_every_workspace_that_server_hosts(self):
+        store = MemoryAccessStore([replace(self.person(temporary=False), grants=()).with_modules(["dd", "evi"])])
+        access = self.service(store, AccessConfig(reader_uri="mongodb://reader"))
+        access.sign_in_with_password("alice@x.com", "Temp-Pass-1234")
+        grants = lambda key: [g["module"] for g in tickets.verify(
+            access.web_secret(key, rotate=True), access.service_headers(key)["x-neraveda-service"], "service", key, now=self.now[0])["grants"]]
+        self.assertEqual(grants("sir"), ["dd"])  # Digital Docking runs in the Inspection Reports web shell
+        self.assertEqual(grants("evi"), ["evi"])
+        self.assertEqual(MODULE_TITLES["dd"], "Digital Docking")
+
     def test_password_admins_administer_and_get_admin_tickets(self):
         store = MemoryAccessStore([replace(self.person(temporary=False), admin=True)])
         access = self.service(store, AccessConfig(reader_uri="mongodb://reader", admin_uri="mongodb://admin"))
@@ -465,6 +475,50 @@ class PasswordSessionTests(FastPasswords, TempRuntime):
         self.assertTrue(claims["adm"])
         access.sign_out()  # no Microsoft call for a password session
         self.assertIsNone(SessionStore().load())
+
+    def test_an_admin_pc_reset_replaces_a_forgotten_password_and_is_audited(self):
+        store = MemoryAccessStore([replace(self.person(temporary=False), admin=True)])
+        access = self.service(store)
+        access.sign_in_with_password("alice@x.com", "Temp-Pass-1234")
+        access.change_password("Temp-Pass-1234", "Harbour lights 42!")  # her own change, then forgotten
+        by = {"email": "admin-pc:someone", "oid": None, "name": "reset-password command"}
+        store.reset_password(by, "Alice@X.com", passwords.new_verifier("Fresh start 2026!")[0], temporary=False, reason="forgot")
+        self.assertEqual(store.users["alice@x.com"].password["epoch"], 2)  # a new epoch: her earlier change no longer counts
+        with self.assertRaisesRegex(SessionExpired, "changed or reset"):
+            access.refresh()
+        for old in ("Temp-Pass-1234", "Harbour lights 42!"):
+            with self.assertRaisesRegex(AccessDenied, "not correct"):
+                self.service(store).sign_in_with_password("alice@x.com", old)
+        self.assertEqual(self.service(store).sign_in_with_password("alice@x.com", "Fresh start 2026!").mode, "password")
+        entry = store.audit_log[-1]
+        self.assertEqual((entry["action"], entry["changes"], entry["reason"], entry["actor"]["email"]),
+                         ("user.update", ["password:set"], "forgot", "admin-pc:someone"))
+        self.assertNotIn("verifier", json.dumps(entry))
+        with self.assertRaisesRegex(Exception, "not in the access list"):
+            store.reset_password(by, "nobody@x.com", passwords.new_verifier("Fresh start 2026!")[0], temporary=False, reason="")
+
+    def test_the_reset_password_command(self):
+        from suite_services.access import __main__ as cli
+        store = MemoryAccessStore([replace(self.person(temporary=False), admin=True)])
+        store.close = lambda: None
+        admin_pc = AccessConfig(reader_uri="mongodb://reader", admin_uri="mongodb://admin")
+        run = lambda *argv: cli.main(["reset-password", *argv])
+        with patch.object(cfg, "load_config", return_value=admin_pc), \
+                patch("suite_services.access.store.AccessStore", return_value=store), \
+                patch("builtins.print"):
+            with patch.object(cli.getpass, "getpass", side_effect=["Fresh start 2026!", "Fresh start 2027!"]):
+                self.assertEqual(run("--email", "alice@x.com"), 2)  # typed twice differently: nothing changed
+            with patch.object(cli.getpass, "getpass", side_effect=["short", "short"]):
+                self.assertEqual(run("--email", "alice@x.com"), 2)
+            self.assertEqual(store.users["alice@x.com"].password["epoch"], 1)
+            with patch.object(cli.getpass, "getpass", side_effect=["Fresh start 2026!"] * 4):
+                self.assertEqual(run("--email", "nobody@x.com"), 2)
+                self.assertEqual(run("--email", "Alice@x.com"), 0)
+            self.assertEqual(self.service(store).sign_in_with_password("alice@x.com", "Fresh start 2026!").email, "alice@x.com")
+            self.assertEqual(run("--email", "alice@x.com", "--temporary"), 0)
+            self.assertTrue(store.users["alice@x.com"].password["temporary"])
+        with patch.object(cfg, "load_config", return_value=PASSWORD_ONLY), patch("builtins.print"):
+            self.assertEqual(run("--email", "alice@x.com"), 2)  # not an admin PC
 
 
 class FakeMsalApp:

@@ -19,7 +19,7 @@ from suite_services.inspection_server import InspectionAppError, find_node, serv
 EVI_FOLDER = "Emission Correction Assitant"
 DEFAULT_PORT = 3001
 HEALTH_MARKER = '"neraveda-emissions"'  # returned by /api/health
-SOURCE_ENTRIES = ("app", "components", "lib", "next.config.mjs", "package.json", "postcss.config.mjs", "tsconfig.json")
+SOURCE_ENTRIES = ("app", "components", "lib", "proxy.ts", "next.config.mjs", "package.json", "postcss.config.mjs", "tsconfig.json")
 
 __all__ = ["EVI_FOLDER", "DEFAULT_PORT", "InspectionAppError", "app_dir", "server_port", "app_url", "probe",
            "build_is_current", "server_mode", "start_server", "wait_until_ready", "stop_server", "stop_listener"]

@@ -104,7 +104,7 @@ class SignInTests(unittest.TestCase):
             app._sign_in_interactive()
             self.assertTrue(pump(app, lambda: app._dashboard_built))
             self.assertIsNone(app.signin_panel)
-            self.assertEqual(len(app._allowed), 7)
+            self.assertEqual(len(app._allowed), 8)
         finally:
             app.destroy()
 

@@ -20,7 +20,7 @@ python abhishek_automation_suite.py
 
 People sign in with a NeraVeda ID (their work email) and password, or with their Microsoft work account once IT has registered the app. An admin chooses which workspaces each person may use, and gives out temporary passwords (**Admin**, top right). Workspaces a person may not use are hidden from the home page, the sidebar and Needs attention.
 - Desktop workspaces started directly (e.g. `python -m lube_oil`) open only with a NeraVeda session that includes them.
-- The web workspaces (06, 07) accept requests only from the browser NeraVeda opened, with that person's session.
+- The web workspaces (06, 07) accept requests only from the browser NeraVeda opened, with that person's session. The server checks it for every page (`proxy.ts`) as well as every API call, so a tab without a session gets an "Open from NeraVeda" page, not the app. Exception: Inspection Reports keeps drafts in the browser and still opens them from its offline copy when the NeraVeda server is not running.
 - Until a PC is set up, NeraVeda runs in **local mode**: the Windows user, with every workspace, as before.
 
 Set-up, adding people and leavers: [docs/NERAVEDA_ADMIN_GUIDE.md](docs/NERAVEDA_ADMIN_GUIDE.md). Request for IT: [docs/NERAVEDA_ACCESS_IT_REQUEST.md](docs/NERAVEDA_ACCESS_IT_REQUEST.md). Design, ticket format and limitations: [docs/NERAVEDA_ACCESS.md](docs/NERAVEDA_ACCESS.md).

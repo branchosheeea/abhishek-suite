@@ -126,6 +126,17 @@ class _Base:
                  "changes": changes, "reason": (reason or "")[:500], "client": client_info()}
         return self._write(before, after, expected_rev, audit)
 
+    def reset_password(self, by: dict, email: str, verifier: dict, *, temporary: bool, reason: str) -> UserAccess:
+        """An admin reset: a new epoch, so the person's earlier changes and signed-in sessions no longer count."""
+        from suite_services.access import passwords
+        person = self._find(normalise_email(email))
+        if person is None:
+            raise AccessStoreError(f"{email} is not in the access list.")
+        epoch = int((person.password or {}).get("epoch", 0)) + 1
+        record = passwords.base_record(verifier, temporary=temporary, epoch=epoch,
+                                       set_by=by.get("email") or by.get("name") or "admin PC")
+        return self.save_user(by, replace(person, password=record), person.rev, reason)
+
     def bootstrap_admin(self, email: str, name: str, by: dict | None = None, password: dict | None = None) -> UserAccess:
         """The first admin, with every workspace; `password` (passwords.base_record) for sign-in without Microsoft."""
         if any(u.admin and u.active for u in self._users()):

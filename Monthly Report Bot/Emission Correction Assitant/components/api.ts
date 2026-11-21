@@ -10,12 +10,14 @@ export class ApiError extends Error {
   }
 }
 
-/** Raised on the window when the NeraVeda session ended (401): the SessionGate shows how to reopen. */
+/** Raised on the window when the NeraVeda session ended: the SessionGate shows how to reopen. */
 export const SESSION_ENDED = "neraveda:session-ended"
+/** Set by the server (lib/server/errors.ts SESSION_HEADER) only on session errors, not on e.g. "database unavailable". */
+const SESSION_HEADER = "x-neraveda-session"
 
 async function handle<T>(res: Response): Promise<T> {
   if (res.ok) return (await res.json()) as T
-  if ((res.status === 401 || res.status === 503) && typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_ENDED))
+  if (res.headers.get(SESSION_HEADER) === "ended" && typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_ENDED))
   let message = `Request failed (${res.status})`
   try {
     const body = await res.json()

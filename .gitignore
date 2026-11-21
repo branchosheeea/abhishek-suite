@@ -56,6 +56,10 @@ desktop.ini
 /Monthly Report Bot/data/
 /Monthly Report Bot/diagnostics/*
 !/Monthly Report Bot/diagnostics/*.py
+# Digital Docking: real vessel reports and daily emails stay out of Git (only synthetic test data is committed)
+/Monthly Report Bot/Dry Docking Module/Docking Reports Depository/
+/Monthly Report Bot/Dry Docking Module/Daily Docking Report/
+/Monthly Report Bot/Dry Docking Module/Photo Test/
 
 # ---------- Photo Assorter ----------
 /Photo Assorter/models/

@@ -93,11 +93,11 @@ class EmissionsHomeTests(unittest.TestCase):
 
 class EmissionsCardTests(unittest.TestCase):
     def test_card_seven_and_review_opens_the_session(self):
-        self.assertEqual([w[0] for w in WORKSPACES][-1], "evi")
+        self.assertEqual([w[0] for w in WORKSPACES][6], "evi")
         app = AutomationSuite(access=FakeAccess())
         try:
             self.assertEqual(app.evi_button.cget("text"), "Open Emissions Validation")
-            self.assertEqual(list(app.tiles)[-1], "evi")
+            self.assertEqual(list(app.tiles)[6], "evi")
             item = home.Attention(home.REVIEW, "DHT COLT", "3 errors", "", "evi", "", "", target="sessions/abcdefgh12")
             with patch("abhishek_automation_suite.emissions_server.probe", return_value="evi"), \
                     patch("abhishek_automation_suite.emissions_server.start_server") as start, \
