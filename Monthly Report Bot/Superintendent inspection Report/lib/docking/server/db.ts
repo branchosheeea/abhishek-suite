@@ -15,7 +15,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { backup, DatabaseSync } from "node:sqlite"
 
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 export type Store = Readonly<{ db: DatabaseSync; root: string }>
 
@@ -137,7 +137,37 @@ CREATE TRIGGER ${t}_no_update BEFORE UPDATE ON ${t} BEGIN SELECT RAISE(ABORT, '$
 CREATE TRIGGER ${t}_no_delete BEFORE DELETE ON ${t} BEGIN SELECT RAISE(ABORT, '${t} records cannot be deleted'); END;`).join("\n")
 }
 
-const MIGRATIONS: Record<number, string> = { 1: V1 + immutableTriggers() }
+// V2 (2026-11-22): the Daily Report to owners and the names of the people who act.
+//   daily_reports    the Superintendent's working draft of one day's report (one per day; edited freely, never deleted)
+//   report_versions  each issued version: the exact content, email text and PDF (stored under its hash); never changed
+//   people           the name last seen for each signed-in account, so screens show names instead of e-mail addresses
+const V2 = `
+CREATE TABLE people(sub TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
+
+CREATE TABLE daily_reports(
+  id TEXT PRIMARY KEY, docking_id TEXT NOT NULL REFERENCES dockings(id), day_id TEXT NOT NULL UNIQUE REFERENCES days(id),
+  content TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL
+) STRICT;
+CREATE TRIGGER daily_reports_no_delete BEFORE DELETE ON daily_reports BEGIN SELECT RAISE(ABORT, 'daily reports are never deleted'); END;
+CREATE TRIGGER daily_reports_fixed BEFORE UPDATE ON daily_reports
+WHEN NEW.id IS NOT OLD.id OR NEW.docking_id IS NOT OLD.docking_id OR NEW.day_id IS NOT OLD.day_id OR NEW.created_at IS NOT OLD.created_at
+  OR NEW.created_by IS NOT OLD.created_by OR NEW.rev <> OLD.rev + 1
+BEGIN SELECT RAISE(ABORT, 'a daily report keeps its day; each save raises its revision by one'); END;
+
+CREATE TABLE report_versions(
+  id TEXT PRIMARY KEY, report_id TEXT NOT NULL REFERENCES daily_reports(id), docking_id TEXT NOT NULL REFERENCES dockings(id),
+  day_id TEXT NOT NULL REFERENCES days(id), version INTEGER NOT NULL CHECK(version >= 1),
+  content TEXT NOT NULL, email_text TEXT NOT NULL,
+  pdf_sha256 TEXT NOT NULL CHECK(length(pdf_sha256) = 64), pdf_path TEXT NOT NULL, pdf_bytes INTEGER NOT NULL, file_name TEXT NOT NULL,
+  photos INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '', issued_by TEXT NOT NULL, issued_at TEXT NOT NULL,
+  UNIQUE(day_id, version)
+) STRICT;
+CREATE TRIGGER report_versions_no_update BEFORE UPDATE ON report_versions BEGIN SELECT RAISE(ABORT, 'report_versions records cannot be changed'); END;
+CREATE TRIGGER report_versions_no_delete BEFORE DELETE ON report_versions BEGIN SELECT RAISE(ABORT, 'report_versions records cannot be deleted'); END;
+`
+
+const MIGRATIONS: Record<number, string> = { 1: V1 + immutableTriggers(), 2: V2 }
 
 export function tx<T>(db: DatabaseSync, fn: () => T): T {
   db.exec("BEGIN IMMEDIATE")

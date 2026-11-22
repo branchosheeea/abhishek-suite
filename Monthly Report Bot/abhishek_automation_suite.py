@@ -1152,7 +1152,7 @@ class AutomationSuite(ctk.CTk):
         process = self.sir_process
 
         def wait():
-            self.sir_events.put((process, mode, inspection_server.wait_until_ready(process, port)))
+            self.sir_events.put((process, mode, inspection_server.wait_until_ready(process, port, inspection_server.ready_timeout(mode))))
         threading.Thread(target=wait, daemon=True).start()
         self.after(250, self.poll_sir_start)
 
@@ -1248,7 +1248,7 @@ class AutomationSuite(ctk.CTk):
         process = self.evi_process
 
         def wait():
-            self.evi_events.put((process, mode, emissions_server.wait_until_ready(process, port)))
+            self.evi_events.put((process, mode, emissions_server.wait_until_ready(process, port, emissions_server.ready_timeout(mode))))
         threading.Thread(target=wait, daemon=True).start()
         self.after(250, self.poll_evi_start)
 

@@ -9,7 +9,7 @@ import useSWR from "swr"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { API, type AuditEntry, type Docking, type DockingDetail, formatDay, formatOffset, formatStamp, getJson, send, STATUS_LABEL } from "./client"
+import { API, type AuditEntry, type Docking, type DockingDetail, formatDay, formatOffset, formatStamp, getJson, PeopleContext, send, STATUS_LABEL, usePeople, who } from "./client"
 import { DayGrid } from "./day-grid"
 import { DockingForm } from "./docking-form"
 import { JobsPanel } from "./jobs-panel"
@@ -34,6 +34,7 @@ export function DockingOverview() {
   const frozen = data.days.some((day) => day.files.length > 0)
 
   return (
+    <PeopleContext value={data.people ?? {}}>
     <main className="mx-auto flex max-w-6xl flex-col gap-8 px-4 py-8 sm:px-9">
       <header className="flex flex-col gap-4 border-b pb-6">
         <BackLink />
@@ -52,7 +53,7 @@ export function DockingOverview() {
             <Item label="Day 0 (arrival at yard)" value={`${formatDay(d.day0_date)}${d.arrival_time ? `, ${d.arrival_time} LT` : ""}`} />
             <Item label="Planned departure" value={d.planned_departure_date ? formatDay(d.planned_departure_date) : "Not set"} />
             <Item label="Local time at the yard" value={formatOffset(d.utc_offset_minutes)} />
-            <Item label="Created" value={`${formatStamp(d.created_at)} by ${d.created_by}`} />
+            <Item label="Created" value={`${formatStamp(d.created_at)} by ${who(data.people, d.created_by)}`} />
           </dl>
         ) : (
           <div className="rounded-2xl border bg-card p-5">
@@ -72,10 +73,11 @@ export function DockingOverview() {
         )}
       </header>
 
-      <DayGrid dockingId={d.id} days={data.days} notes={data.notes} onChanged={() => mutate()} />
+      <DayGrid dockingId={d.id} day0Date={d.day0_date} importable={d.status !== "cancelled"} days={data.days} notes={data.notes} onChanged={() => mutate()} />
       <JobsPanel dockingId={d.id} jobs={data.jobs} notes={data.notes} onChanged={() => mutate()} />
       <ActivityLog dockingId={d.id} version={`${d.rev}-${data.notes.length}-${data.jobs.length}-${data.days.filter((x) => x.id).length}`} />
     </main>
+    </PeopleContext>
   )
 }
 
@@ -101,7 +103,8 @@ const ACTIONS: Record<string, string> = {
   "day.reviewed": "marked a day as reviewed", "job.create": "created a job", "submission.initial": "imported a daily file",
   "submission.revision": "imported a revised file", "submission.amendment": "imported an amended file", "activity.link": "linked an entry to a job",
   "activity.unlink": "removed an entry from a job", "annotation.comment": "added a comment", "annotation.query": "raised a query",
-  "annotation.correction": "added a correction",
+  "annotation.correction": "added a correction", "report.start": "started a daily report", "report.rebuild": "rebuilt a daily report's items from the vessel's entries",
+  "report.issue": "issued a daily report",
 }
 
 function describe(a: AuditEntry): string {
@@ -110,12 +113,15 @@ function describe(a: AuditEntry): string {
   if (a.action === "job.create" && after.job_no) return `${what} ${after.job_no} — ${after.title}`
   if (a.action.startsWith("submission.") && after.day !== undefined) return `${what}: Day ${after.day} ${after.department} (${after.file})`
   if (a.action === "day.no_report" && after.reason) return `${what}: ${after.reason}`
+  if (a.action === "report.start" && after.day !== undefined) return `${what} for Day ${after.day}`
+  if (a.action === "report.issue" && after.day !== undefined) return `${what}: Day ${after.day} version ${after.version}${after.reason ? ` (${after.reason})` : ""}`
   return what
 }
 
 /** Who did what, from the audit trail (which can never be changed). */
 function ActivityLog({ dockingId, version }: { dockingId: string; version: string }) {
   const [open, setOpen] = useState(false)
+  const people = usePeople()
   const { data, error } = useSWR(open ? [`${API}/${dockingId}/audit`, version] : null, ([p]: [string, string]) => getJson<{ audit: AuditEntry[] }>(p))
   return (
     <section aria-labelledby="log-title" className="flex flex-col gap-3">
@@ -129,7 +135,7 @@ function ActivityLog({ dockingId, version }: { dockingId: string; version: strin
           {[...data.audit].reverse().map((a) => (
             <li key={a.id} className="flex flex-wrap gap-x-3 px-4 py-2">
               <span className="w-40 shrink-0 text-muted-foreground tabular-nums">{formatStamp(a.at)}</span>
-              <span className="font-medium">{a.actor}</span>
+              <span className="font-medium">{who(people, a.actor)}</span>
               <span>{describe(a)}</span>
             </li>
           ))}

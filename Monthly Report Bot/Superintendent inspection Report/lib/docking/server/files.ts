@@ -1,4 +1,4 @@
-// Digital Docking · Stage 1B: immutable, content-addressed files (original workbooks and photos).
+// Digital Docking · Stage 1B: immutable, content-addressed files (original workbooks, photos, issued report PDFs).
 // A file is written to staging, flushed to disk, then renamed into originals/ or photos/ under its SHA-256, so a
 // half-written file never appears under a real name and writing the same bytes twice changes nothing.
 // Files are written BEFORE the database transaction that refers to them; if that transaction fails, the files are
@@ -9,11 +9,11 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, rea
 import { dirname, join, relative, sep } from "node:path"
 import type { Store } from "./db"
 
-export type Kind = "originals" | "photos"
+export type Kind = "originals" | "photos" | "reports"
 
 export const sha256 = (data: Buffer) => createHash("sha256").update(data).digest("hex")
 
-const EXTENSIONS = new Set(["xlsx", "jpeg", "jpg", "png", "gif", "bmp", "webp"])
+const EXTENSIONS = new Set(["xlsx", "jpeg", "jpg", "png", "gif", "bmp", "webp", "pdf"])
 
 /** Relative path, e.g. "originals/ab/ab12….xlsx" (stored in the database so the data folder can move). */
 export function storedPath(kind: Kind, hash: string, extension: string): string {
@@ -78,9 +78,10 @@ export function sweepOrphans(store: Store, minAgeMs = 60 * 60 * 1000, now = Date
   const referenced = new Set<string>([
     ...(store.db.prepare("SELECT stored_path AS p FROM source_files").all() as { p: string }[]).map((r) => r.p),
     ...(store.db.prepare("SELECT stored_path AS p FROM photos WHERE stored_path IS NOT NULL").all() as { p: string }[]).map((r) => r.p),
+    ...(store.db.prepare("SELECT pdf_path AS p FROM report_versions").all() as { p: string }[]).map((r) => r.p),
   ])
   const removed: string[] = []
-  for (const path of [...listStored(store, "originals"), ...listStored(store, "photos")]) {
+  for (const path of [...listStored(store, "originals"), ...listStored(store, "photos"), ...listStored(store, "reports")]) {
     if (referenced.has(path)) continue
     const full = absolute(store, path)
     if (now - statSync(full).mtimeMs < minAgeMs) continue

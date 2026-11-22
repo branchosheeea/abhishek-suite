@@ -50,7 +50,7 @@ class EmissionsServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             (Path(folder) / "app").mkdir()
             (Path(folder) / "app" / "page.tsx").write_text("x")
-            self.assertEqual(emissions_server.server_mode(Path(folder)), "dev")
+            self.assertEqual(emissions_server.server_mode(Path(folder)), "build")
 
     def test_server_listens_on_localhost_only(self):
         command = emissions_server.server_command("node", APP, 3001, "start")

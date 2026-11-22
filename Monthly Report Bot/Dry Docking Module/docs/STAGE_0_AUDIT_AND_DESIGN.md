@@ -390,3 +390,139 @@ Started before the 1A vessel test at the user's request (the workbook is being r
 - **Not checked:** the screens' appearance in a browser (only that they compile and are served).
 
 **Next:** the daily workbook importer (needs your reworked layout), linking imported entries to jobs, and the PDF Daily Report.
+
+## 13. DHT Leopard 2025 loaded as a working example; day screen (built 21 Nov 2026)
+
+No vessel is in dock now, so the module was filled with the Leopard 2nd special survey (13–29 Oct 2025) from its 17 daily emails: both the vessel's side (the attached Work Done workbook) and the Superintendent's side (the report sent to owners).
+
+**Reader for the vessel's current workbook** (`lib/docking/legacy/workdone.ts`): the format vessels send today, before the NeraVeda template. It is not only for the demo: a docking that starts before the template is rolled out can be imported with it.
+
+- One workbook holds both departments. Sheets are sorted by name into department and performer; staging tables and the final-day plain list sheet are read too.
+- An item is the serial number in B plus the sentence in C. Text written one row above its number counts as the same item.
+- Photos belong to the item above them, slot 1, 2, 3… in reading order.
+- A numbered item with photos but no text is kept as **"no description"** (Leopard Day 15: 20 items), never merged into a neighbour.
+- Unused numbered rows (no text, no photo) are dropped. Unknown sheets are reported, not imported.
+- Same hardened package reader as the template. Found and fixed on the way: `&` in cell text (e.g. "5P & 4P WBT") was shown as `&amp;`; XML's five built-in entities and numeric references are now decoded (this applies to the Stage 1A reader too).
+
+**Store:** a combined workbook is stored once and is the source of both that day's Deck and Engine records. Using the same file for another day is still refused.
+
+**Loaded** (`pnpm docking:history <folder>`, from emails unpacked by `scripts/docking-extract-emails.py`; the data stays on this PC, outside Git):
+
+- Docking `LEO-2025-SS2`, Day 0 = 13 Oct (arrival 2100 LT), UTC+8, completed.
+- Days 1–16: 1,193 entries and 3,001 photos, all placed; about 135 MB.
+- Day 0: no workbook, recorded as "no report".
+- Each day's email (new text only) is a note on the day, by its sender, with the sent time in yard local time.
+- Days are left as **received**, so review can be tried on them.
+
+**Day screen** (`/docking/<id>/days/<n>`, opened from the day card):
+
+- Deck / Engine switch with counts; filters *Not linked to a job* and *No description*.
+- Entries grouped by ship staff / yard staff / service engineer, in workbook order. The staging register is collapsed, with a note that it is copied forward daily.
+- Photos as thumbnails, with a full-size viewer (arrow keys, Esc).
+- Each entry: link to a job, *+ New job from this entry* (title from the entry, Area/System from the draft list), remove a link (needs a reason), and notes.
+- Beside it: the day's notes, which for Leopard hold the report as it was sent. *Mark reviewed*; previous and next day.
+- APIs: `GET /api/docking/dockings/<id>/days/<n>`, `GET …/photos/<photo>` (hash-checked, cached), `POST …/activities/<entry>` (link, unlink, new job). All need the `dd` right and the write header.
+
+**Checked:**
+
+- Web shell tests 177, all passing; `tsc` clean.
+- On a temporary server (copy of the app, throwaway store, Docking-only session): all 17 days load in under 0.3 s once compiled; photos are served as JPEG; without a session → 401; a write without the request header → 403; *new job from entry* works.
+- **Not checked:** the screens in a browser.
+
+**What this shows already (for Stage 3/4):**
+
+- Day 8: 17 Deck ship-staff rows vs 15 items in the email.
+- Day 15: 20 photo-only items that the email describes from the Superintendent's own knowledge.
+- Service-engineer rows carry no company names; the email adds them (HD Marine, Cosco, Alphatron…).
+- The staging list repeats 30–50 rows every day.
+
+## 14. Daily Report to owners (built 22 Nov 2026)
+
+The step after review (D8): the Superintendent turns a reviewed day into the report owners receive, and sends it themself (D9: NeraVeda sends nothing). Opened from the day screen: *Daily report to owners* (`/docking/<id>/days/<n>/report`).
+
+**Draft (built by NeraVeda, edited by the Superintendent):**
+
+- Layout of the Superintendent's own emails:
+  - greeting and summary;
+  - header lines, with Date / Day N automatic;
+  - timed events;
+  - DECK and ENGINE, each by ship's staff and yard staff;
+  - Class Surveyor attendance;
+  - service engineers as "Company – work".
+- Items start as one per vessel entry, with that entry's photos. The staging register is left out.
+- Greeting, header lines and the events marked *Carry to the next day* come from the previous day's report. The first report starts from the docking details (arrival line, planned departure).
+- Editing:
+  - change wording, add a company name;
+  - move items up or down or to another section, merge with the item above, delete (with Undo), add items;
+  - remove photos, or add any photo of that day from a picker.
+- The vessel's own text stays visible under each changed item. Records of the vessel are never edited.
+- Changes save on their own, with a revision check: a change made in another window is refused, not overwritten. *Rebuild items from the vessel's entries* is there for a corrected file.
+
+**Issuing:**
+
+- Needs the day marked reviewed and text on every item. A photo-only entry must be described, merged or deleted first.
+- Freezes the version: the content, the email text and the PDF (stored under its SHA-256, in backups too) can never change.
+- A later version needs a reason ("what changed"). Re-issuing an unchanged draft is refused.
+- The PDF must be ≤ 10 MB. The editor shows the estimate as photos are added or removed.
+- **Copy email text** (per issued version) for pasting into Outlook; **PDF** download.
+
+**PDF** (server side, jsPDF already in the project):
+
+- A4. Company logo and the inspection report's palette.
+- Header table, summary, events, then each item followed by its photos, 3 per row. JPEGs are embedded unchanged, so size ≈ the photos.
+- Footer: version, issued time in yard local time and the issuer's name. Previews carry a red DRAFT mark.
+
+**Store, schema 2** (upgrade is automatic, with a database backup first):
+
+- `daily_reports`: one working draft per day; never deleted; each save raises the revision by one.
+- `report_versions`: issued versions; cannot be changed or deleted.
+- `people`: the name last seen per sign-in.
+
+**Smaller changes:**
+
+- Screens now show names instead of e-mail addresses: activity log, notes, *Created by*, issued versions. Records keep the sign-in id.
+- The daily store backup no longer blocks the server while it copies photos: the first request of the day waited about 30 s on a fresh backup folder.
+
+**Checked:**
+
+- Web shell tests 186 and Python tests 301 (7 skipped), all passing; `tsc` clean.
+- On a copy of the real store (Leopard):
+  - schema 1 → 2 upgrade with its backup;
+  - the Day 8 draft is built in 6 ms;
+  - PDFs for all 16 days are 0.6–5.4 MB, each built in under 1 s.
+- Production build plus HTTP run on a temporary server: page 200; no session → 401; write without the request header → 403; save 23 ms; stale save refused; preview 4.3 MB in 1.3 s; issue refused before review, then 0.8 s; download file name correct; audit shows `report.start` and `report.issue`.
+- **Not checked:** the editor in a browser (Sophos intercepts localhost browsers on this PC).
+
+**Day 8 compared with the email that was sent:**
+
+| | Email as sent | Auto-draft |
+|---|---|---|
+| Items (deck ship / deck yard / engine ship / engine yard / class / service) | 15 / 14 / 11 / 9 / 1 / 10 = 60 | 17 / 12 / 8 / 10 / 0 / 6 = 53 |
+| Characters | 7,061 | 4,193 |
+
+- 45 of the 60 sent items have a close draft item (at least half the same words).
+- The other 15 were the Superintendent's own: rudder, EGCS sea tube, LT cooler pipes, CO2 hoses, blower vents, anchor chain studs, two ballast-line items, Class attendance, and five service companies not in the vessel's workbook.
+
+## 15. Importing daily files from the screen; report status on the days (built 22 Nov 2026)
+
+**What the Superintendent does:** on the docking screen (or on a day's screen) press **Import a daily file**, choose or drop the vessel's workbook, read what NeraVeda found, then press **Import into Day N**. Nothing is stored before that press.
+
+**What the check shows before importing:**
+- the date on the sheets and the day it gives (Day 0 = arrival date), and the "Day" number the vessel wrote, with a warning if the two disagree;
+- for Deck and Engine: entries (and how many have no description), photos, pictures left out, and what the import does: new for the day, replaces the earlier file (before review), replaces a reviewed file (reason required; the day goes back to "received"), or same as the current file (nothing to do);
+- problems that stop the import: no date (choose one), a date before Day 0, the same file already filed under another day or docking, a cancelled docking, a file that is not an .xlsx workbook;
+- opened from a day's screen, a file dated for another day offers a choice: file it as its own date, or as this day because the date on the file is wrong. Both dates are kept with the record.
+
+**Format:** the vessel's current "Work Done" workbook (both departments in one file), read by the same hardened reader as the history load. The NeraVeda template will be added as a second format once its layout is final.
+
+**Daily report links:**
+- Each day card shows "Report draft", "Report vN issued" or "Report vN issued · changed since".
+- If a corrected file arrives after the report was drafted, the report screen says so and offers **Rebuild items**. Issued versions never change.
+
+**Fix found by the tests:** when a combined workbook replaced a reviewed day, the Engine half was recorded as a plain revision (the Deck half had already put the day back to "received") and lost its reason. Both halves are now amendments with the reason.
+
+**Checks:**
+- `tsc` clean; 195/195 web tests, 9 of them new for the import.
+- On a production build with a temporary empty store, the real Leopard Day 8 workbook (6.5 MB; deck 64 entries / 169 photos, engine 36 / 81) was checked in 0.5 s and imported in 2.5 s over HTTP.
+- Also checked over HTTP: the same file again → 400 "Nothing would change"; the Day 9 file filed as Day 8 → revision with the date warning; a report drafted before it then showed the newer-file notice; a non-workbook → 400; no session → 401; no request header → 403.
+- **Not checked:** the panel in a browser.

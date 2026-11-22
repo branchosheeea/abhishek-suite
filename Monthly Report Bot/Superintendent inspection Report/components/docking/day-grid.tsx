@@ -1,12 +1,15 @@
 "use client"
 
-import { CheckCircle2, FileSpreadsheet, MessageSquare } from "lucide-react"
+import { ArrowRight, CheckCircle2, FileSpreadsheet, FileText, MessageSquare } from "lucide-react"
+import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useState, type FormEvent } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
-import { API, type Day, DAY_LABEL, formatDay, formatStamp, type Note, send, todayIso } from "./client"
+import { API, type Day, DAY_LABEL, type DayReport, formatDay, formatStamp, type Note, send, todayIso } from "./client"
+import { ImportPanel } from "./import-panel"
 import { NoteThread } from "./note-thread"
 
 const STATE_STYLE: Record<Day["state"], string> = {
@@ -16,8 +19,11 @@ const STATE_STYLE: Record<Day["state"], string> = {
   no_report: "border-border bg-muted text-muted-foreground",
 }
 
-export function DayGrid({ dockingId, days, notes, onChanged }: { dockingId: string; days: Day[]; notes: Note[]; onChanged: () => Promise<unknown> }) {
+export function DayGrid({ dockingId, day0Date, importable, days, notes, onChanged }: {
+  dockingId: string; day0Date: string; importable: boolean; days: Day[]; notes: Note[]; onChanged: () => Promise<unknown>
+}) {
   const [open, setOpen] = useState<number | null>(null)
+  const router = useRouter()
   const today = todayIso()
   const counts = days.reduce((acc, d) => ({ ...acc, [d.state]: (acc[d.state] ?? 0) + 1 }), {} as Record<string, number>)
 
@@ -30,8 +36,11 @@ export function DayGrid({ dockingId, days, notes, onChanged }: { dockingId: stri
         </p>
       </div>
       <p className="text-sm text-muted-foreground">
-        Each day expects a Deck and an Engine file. Importing the vessel&apos;s daily workbooks comes next, once the workbook layout is final; until then days show as expected.
+        Each day expects a Deck and an Engine file. Import the vessel&apos;s workbook here: NeraVeda reads its date and files it under the right day. Then open the day to review the entries and photos, link them to jobs, and write the daily report to owners.
       </p>
+      {importable && (
+        <ImportPanel dockingId={dockingId} day0Date={day0Date} onImported={async (done) => { await onChanged(); router.push(`/docking/${dockingId}/days/${done.day_no}`) }} />
+      )}
       <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         {days.map((d) => {
           const dayNotes = notes.filter((n) => n.entity === "day" && n.entity_id === d.id)
@@ -51,6 +60,7 @@ export function DayGrid({ dockingId, days, notes, onChanged }: { dockingId: stri
                     ))}
                     {dayNotes.length > 0 && <span className="inline-flex items-center gap-0.5"><MessageSquare className="size-3" aria-hidden />{dayNotes.length}</span>}
                   </span>
+                  {d.report && <ReportChip report={d.report} />}
                 </span>
                 <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold", STATE_STYLE[d.state])}>{DAY_LABEL[d.state]}</span>
               </button>
@@ -60,6 +70,15 @@ export function DayGrid({ dockingId, days, notes, onChanged }: { dockingId: stri
         })}
       </ol>
     </section>
+  )
+}
+
+function ReportChip({ report }: { report: DayReport }) {
+  const text = !report.versions ? "Report draft" : report.changed ? `Report v${report.versions} issued · changed since` : `Report v${report.versions} issued`
+  return (
+    <span className={cn("mt-1 inline-flex w-fit items-center gap-1 text-xs", report.versions && !report.changed ? "font-semibold text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400")}>
+      <FileText className="size-3" aria-hidden />{text}
+    </span>
   )
 }
 
@@ -83,6 +102,11 @@ function DayDetail({ dockingId, day, notes, future, onChanged }: { dockingId: st
 
   return (
     <div className="flex flex-col gap-4 border-t p-4">
+      {(day.files.length > 0 || day.id) && (
+        <Link href={`/docking/${dockingId}/days/${day.day_no}`} className="inline-flex w-fit items-center gap-1 text-sm font-semibold text-primary underline-offset-2 hover:underline">
+          Open Day {day.day_no}{day.files.length > 0 ? ": entries and photos" : ""} <ArrowRight className="size-4" aria-hidden />
+        </Link>
+      )}
       {day.files.length > 0 ? (
         <ul className="flex flex-col gap-1 text-sm">
           {day.files.map((f) => (

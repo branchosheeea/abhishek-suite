@@ -192,3 +192,11 @@ describe("photo size from the file header", () => {
     assert.equal(imageInfo(Buffer.from("not an image")), null)
   })
 })
+
+describe("text from workbook XML", () => {
+  test("XML's own entities and character references are decoded, nothing else", async () => {
+    const { decodeEntities } = await import("../lib/docking/photos/xml")
+    assert.equal(decodeEntities("5P &amp; 4P &lt;WBT&gt; &quot;a&quot; &apos;b&apos; &#176; &#xB0;"), `5P & 4P <WBT> "a" 'b' ° °`)
+    assert.equal(decodeEntities("&amp;lt; &nbsp; &#0; &#xD800; &AMP;"), "&lt; &nbsp; &#0; &#xD800; &AMP;")
+  })
+})

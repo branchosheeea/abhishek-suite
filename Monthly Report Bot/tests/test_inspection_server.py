@@ -71,7 +71,7 @@ class InspectionServerTests(unittest.TestCase):
     def test_build_freshness_controls_mode(self):
         with tempfile.TemporaryDirectory() as root:
             folder = _make_app(root)
-            self.assertEqual(sir.server_mode(folder), "dev")  # never built
+            self.assertEqual(sir.server_mode(folder), "build")  # never built
             build_id = folder / ".next" / "BUILD_ID"
             build_id.parent.mkdir()
             build_id.write_text("x")
@@ -81,7 +81,11 @@ class InspectionServerTests(unittest.TestCase):
             os.utime(build_id, (2_000, 2_000))
             self.assertEqual(sir.server_mode(folder), "start")
             os.utime(source, (3_000, 3_000))  # edited after the build
-            self.assertEqual(sir.server_mode(folder), "dev")
+            self.assertEqual(sir.server_mode(folder), "build")
+            with patch.dict(os.environ, {"NERAVEDA_WEB_DEV": "1"}):
+                self.assertEqual(sir.server_mode(folder), "dev")  # only when working on the app's code
+            self.assertEqual(sir.ready_timeout("build"), 900.0)
+            self.assertEqual(sir.ready_timeout("start"), 180.0)
 
     def test_cloud_sync_status_hides_connection_string(self):
         cases = {
@@ -140,13 +144,15 @@ class InspectionServerTests(unittest.TestCase):
                 process, mode = sir.start_server(Path(root), 3000, log)
 
             self.assertIs(process, popen.return_value)
-            self.assertEqual(mode, "dev")
+            self.assertEqual(mode, "build")
             args, kwargs = popen.call_args
-            self.assertEqual(args[0], ["node", str(next_bin), "dev", "-H", "127.0.0.1", "-p", "3000"])
+            # Not `next dev`: build, then serve the build, so OneDrive activity cannot reload the page.
+            self.assertEqual(args[0], ["node", str(sir.BUILD_AND_START), str(next_bin), "-H", "127.0.0.1", "-p", "3000"])
+            self.assertTrue(sir.BUILD_AND_START.is_file())
             self.assertEqual(kwargs["cwd"], str(folder))
             self.assertEqual(kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
             self.assertEqual(kwargs["env"]["NEXT_TELEMETRY_DISABLED"], "1")
-            self.assertIn("next dev on http://localhost:3000/", log.read_text(encoding="utf-8"))
+            self.assertIn("next build on http://localhost:3000/", log.read_text(encoding="utf-8"))
 
     def test_wait_until_ready_stops_when_process_exits(self):
         class Exited:

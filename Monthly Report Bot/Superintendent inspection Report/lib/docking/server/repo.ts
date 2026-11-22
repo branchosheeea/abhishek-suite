@@ -220,6 +220,11 @@ export type SubmissionInput = {
   template: string; templateVersion: number; receivedVia: (typeof RECEIVED_VIA)[number]
   activities: ActivityInput[]; photos: PhotoInput[]
   correctionReason?: string; validation?: unknown
+  /** The vessel's own workbook holds both departments: the same file is the source of that day's Deck and Engine records. */
+  combined?: boolean
+  /** The day was reviewed when this import began: a combined file is imported one department after the other, and the
+   *  first one already puts the day back to "received"; the second is still an amendment of a reviewed day. */
+  reviewedBefore?: boolean
 }
 
 export type ImportResult = {
@@ -258,7 +263,7 @@ export function importSubmission(store: Store, input: SubmissionInput, actor: st
     }
 
     const elsewhere = store.db.prepare(`SELECT s.docking_id, s.department, d.day_no FROM submissions s JOIN days d ON d.id = s.day_id
-      WHERE s.sha256 = ? AND NOT (s.docking_id = ? AND d.day_no = ? AND s.department = ?) LIMIT 1`).get(sha, docking.id, dayNo, input.department) as Row | undefined
+      WHERE s.sha256 = ? AND NOT (s.docking_id = ? AND d.day_no = ? AND (s.department = ? OR ?)) LIMIT 1`).get(sha, docking.id, dayNo, input.department, input.combined ? 1 : 0) as Row | undefined
     if (elsewhere) throw new DockingError(`This exact file was already imported as the ${elsewhere.department} report for Day ${elsewhere.day_no}${elsewhere.docking_id === docking.id ? "" : " of another docking"}.`)
 
     const original = putFile(store, "originals", input.file.data, "xlsx")
@@ -271,7 +276,7 @@ export function importSubmission(store: Store, input: SubmissionInput, actor: st
         recordAttempt(store, { dockingId: docking.id, sha, name, actor, outcome: "duplicate", messages: ["Exact duplicate of the current file; nothing was changed."], submissionId: String(current.id) })
         return { outcome: "duplicate", kind: "duplicate", submissionId: String(current.id), dayNo, supersededId: null } as ImportResult
       }
-      const kind: ImportResult["kind"] = !current ? "initial" : day.state === "reviewed" ? "amendment" : "revision"
+      const kind: ImportResult["kind"] = !current ? "initial" : day.state === "reviewed" || input.reviewedBefore ? "amendment" : "revision"
       if (kind === "amendment" && !input.correctionReason?.trim()) {
         throw new DockingError(`Day ${dayNo} has been reviewed. Give the reason for replacing its ${input.department} file.`, "correctionReason")
       }

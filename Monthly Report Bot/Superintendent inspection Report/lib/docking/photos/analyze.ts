@@ -70,12 +70,12 @@ function richText(node: XmlNode | undefined): string {
   return list(node, "r").map((r) => texts(r, "t").join("")).join("")
 }
 
-function sharedStrings(entries: Map<string, Buffer>, part: string | undefined): string[] {
+export function sharedStrings(entries: Map<string, Buffer>, part: string | undefined): string[] {
   if (!part || !entries.has(part)) return []
   return list(parseXml(entries.get(part), part).sst, "si").map(richText)
 }
 
-function cellText(cell: XmlNode, strings: string[]): string {
+export function cellText(cell: XmlNode, strings: string[]): string {
   const type = attr(cell, "t")
   const value = texts(cell, "v")[0] ?? ""
   if (type === "s") return strings[num(value, -1)] ?? ""
@@ -83,15 +83,15 @@ function cellText(cell: XmlNode, strings: string[]): string {
   return value
 }
 
-function cellsOf(sheet: XmlNode): XmlNode[] {
+export function cellsOf(sheet: XmlNode): XmlNode[] {
   return list(child(sheet.worksheet, "sheetData"), "row").flatMap((row) => list(row, "c"))
 }
 
 // ---------------------------------------------------------------- sheet geometry (for one-cell and absolute anchors)
 
-type Geometry = { colLeft: (c0: number) => number; rowTop: (r0: number) => number }
+export type Geometry = { colLeft: (c0: number) => number; rowTop: (r0: number) => number }
 
-function geometry(sheet: XmlNode): Geometry {
+export function geometry(sheet: XmlNode): Geometry {
   const ws = sheet.worksheet as XmlNode
   const format = child(ws, "sheetFormatPr")
   const defaultWidth = num(attr(format, "defaultColWidth"), num(attr(format, "baseColWidth"), 8) + 0.43)
@@ -130,7 +130,7 @@ function markerEmu(marker: XmlNode | undefined, g: Geometry): { x: number; y: nu
 }
 
 /** 0-based column and row whose cell contains the point. */
-function cellAt(g: Geometry, x: number, y: number): { c0: number; r0: number } {
+export function cellAt(g: Geometry, x: number, y: number): { c0: number; r0: number } {
   let c0 = 0
   while (c0 < 16384 && g.colLeft(c0 + 1) <= x) c0++
   let r0 = 0
@@ -140,8 +140,8 @@ function cellAt(g: Geometry, x: number, y: number): { c0: number; r0: number } {
 
 // ---------------------------------------------------------------- drawings
 
-type Placed = { name: string; hidden: boolean; embed?: string; link?: string; grouped: boolean }
-type AnchorBox = { kind: Picture["anchor"]; x1: number; y1: number; x2: number; y2: number; pictures: Placed[] }
+export type Placed = { name: string; hidden: boolean; embed?: string; link?: string; grouped: boolean }
+export type AnchorBox = { kind: Picture["anchor"]; x1: number; y1: number; x2: number; y2: number; pictures: Placed[] }
 
 function picturesIn(node: XmlNode, grouped: boolean): Placed[] {
   const out: Placed[] = []
@@ -158,7 +158,7 @@ function picturesIn(node: XmlNode, grouped: boolean): Placed[] {
   return out
 }
 
-function anchorsIn(container: XmlNode, g: Geometry): AnchorBox[] {
+export function anchorsIn(container: XmlNode, g: Geometry): AnchorBox[] {
   const out: AnchorBox[] = []
   for (const a of list(container, "twoCellAnchor")) {
     const from = markerEmu(child(a, "from"), g)

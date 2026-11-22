@@ -5,18 +5,19 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-import { API, formatStamp, KIND_LABEL, type Note, send } from "./client"
+import { API, formatStamp, KIND_LABEL, type Note, send, usePeople, who } from "./client"
 
 const KINDS: Note["kind"][] = ["comment", "query", "correction"]
 
 /** Superintendent notes on one item. Notes are never edited or deleted: "Replace" adds a new note that supersedes it. */
 export function NoteThread({ dockingId, entity, entityId, notes, onSaved }: {
-  dockingId: string; entity: "day" | "job"; entityId: string; notes: Note[]; onSaved: () => Promise<unknown>
+  dockingId: string; entity: "day" | "job" | "activity"; entityId: string; notes: Note[]; onSaved: () => Promise<unknown>
 }) {
   const [body, setBody] = useState("")
   const [kind, setKind] = useState<Note["kind"]>("comment")
   const [replacing, setReplacing] = useState<Note | null>(null)
   const [busy, setBusy] = useState(false)
+  const people = usePeople()
 
   async function save(e: FormEvent) {
     e.preventDefault()
@@ -42,7 +43,7 @@ export function NoteThread({ dockingId, entity, entityId, notes, onSaved }: {
             <li key={n.id} className={cn("rounded-lg border bg-background p-3 text-sm", n.replaced && "opacity-60")}>
               <div className="mb-1 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
                 <span className={cn("font-semibold", n.kind === "query" && "text-amber-700 dark:text-amber-400", n.kind === "correction" && "text-primary")}>{KIND_LABEL[n.kind]}</span>
-                <span>{n.author}</span>
+                <span>{who(people, n.author)}</span>
                 <span>{formatStamp(n.created_at)}</span>
                 {n.replaced && <span className="font-semibold">replaced by a later note</span>}
                 {n.supersedes_id && <span>replaces an earlier note</span>}

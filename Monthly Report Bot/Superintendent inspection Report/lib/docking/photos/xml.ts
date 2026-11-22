@@ -24,6 +24,19 @@ const parser = new XMLParser({
   isArray: (name) => ALWAYS_LIST.has(name),
 })
 
+const NAMED: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" }
+
+/** The parser leaves entities alone (processEntities: false). With DOCTYPE refused, only XML's five predefined entities
+ * and numeric character references can occur; they are decoded here, nothing else is. */
+export function decodeEntities(value: string): string {
+  if (!value.includes("&")) return value
+  return value.replace(/&(#[xX][0-9a-fA-F]{1,6}|#[0-9]{1,7}|amp|lt|gt|quot|apos);/g, (match, name: string) => {
+    if (name[0] !== "#") return NAMED[name]
+    const code = name[1] === "x" || name[1] === "X" ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10)
+    return code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : match
+  })
+}
+
 export function parseXml(data: Buffer | undefined, part: string): XmlNode {
   if (!data) throw new WorkbookRejected(`The workbook is missing ${part}.`)
   const text = data.toString("utf8")
@@ -58,14 +71,14 @@ export function child(node: unknown, name: string): XmlNode | undefined {
 export function attr(node: unknown, name: string): string | undefined {
   if (!node || typeof node !== "object") return undefined
   const value = (node as XmlNode)[`@${name}`]
-  return value === undefined ? undefined : String(value)
+  return value === undefined ? undefined : decodeEntities(String(value))
 }
 
 export function text(node: unknown): string {
   if (node === undefined || node === null) return ""
-  if (typeof node !== "object") return String(node)
+  if (typeof node !== "object") return decodeEntities(String(node))
   const value = (node as XmlNode)["#text"]
-  return value === undefined ? "" : String(value)
+  return value === undefined ? "" : decodeEntities(String(value))
 }
 
 /** Relationship id → target part path, resolved against the part that owns the .rels file. */

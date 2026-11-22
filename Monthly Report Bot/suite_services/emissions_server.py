@@ -14,7 +14,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from suite_services.inspection_server import InspectionAppError, find_node, server_command, server_env, stop_listener, stop_server
+from suite_services.inspection_server import (InspectionAppError, find_node, ready_timeout, server_command, server_env, stale_build_mode,
+                                              stop_listener, stop_server)
 
 EVI_FOLDER = "Emission Correction Assitant"
 DEFAULT_PORT = 3001
@@ -22,7 +23,7 @@ HEALTH_MARKER = '"neraveda-emissions"'  # returned by /api/health
 SOURCE_ENTRIES = ("app", "components", "lib", "proxy.ts", "next.config.mjs", "package.json", "postcss.config.mjs", "tsconfig.json")
 
 __all__ = ["EVI_FOLDER", "DEFAULT_PORT", "InspectionAppError", "app_dir", "server_port", "app_url", "probe",
-           "build_is_current", "server_mode", "start_server", "wait_until_ready", "stop_server", "stop_listener"]
+           "build_is_current", "server_mode", "ready_timeout", "start_server", "wait_until_ready", "stop_server", "stop_listener"]
 
 
 def app_dir(project_root):
@@ -64,7 +65,7 @@ def build_is_current(folder):
 
 
 def server_mode(folder):
-    return "start" if build_is_current(folder) else "dev"
+    return "start" if build_is_current(folder) else stale_build_mode()
 
 
 def probe(port, timeout=1.5):

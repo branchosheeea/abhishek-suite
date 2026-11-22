@@ -2,8 +2,10 @@
 // is used each day (in the background; a failure is logged, never shown as lost data). Server-side only.
 
 import { existsSync, readdirSync } from "node:fs"
+import { currentUser } from "../../server/auth"
 import { backupDir, backupStore } from "./backup"
 import { openStore, type Store } from "./db"
+import { rememberPerson } from "./reports"
 
 const state = globalThis as unknown as { __dockingStore?: Promise<Store>; __dockingBackupDay?: string }
 
@@ -29,5 +31,13 @@ export async function dockingStore(): Promise<Store> {
   })
   const store = await state.__dockingStore
   dailyBackup(store)
+  const user = currentUser()
+  if (user?.typ === "session") {
+    try {
+      rememberPerson(store, user.sub, user.name)
+    } catch (error) {
+      console.error("[docking] could not record the signed-in name:", error)
+    }
+  }
   return store
 }

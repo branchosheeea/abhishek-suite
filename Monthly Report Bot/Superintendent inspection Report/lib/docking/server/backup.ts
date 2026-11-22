@@ -7,6 +7,7 @@
 // DOCKING_BACKUP_DIR somewhere else for that.
 
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { copyFile, readFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { backup, DatabaseSync } from "node:sqlite"
 import { closeStore, openStore, SCHEMA_VERSION, type Store } from "./db"
@@ -19,7 +20,7 @@ export type Manifest = Readonly<{
   files: readonly { path: string; sha256: string }[]
 }>
 
-const COUNTED = ["dockings", "days", "submissions", "activities", "photos", "jobs", "annotations", "audit"] as const
+const COUNTED = ["dockings", "days", "submissions", "activities", "photos", "jobs", "annotations", "audit", "daily_reports", "report_versions"] as const
 
 export function backupDir(store: Store): string {
   return process.env.DOCKING_BACKUP_DIR || join(store.root, "backups")
@@ -28,6 +29,7 @@ export function backupDir(store: Store): string {
 function referencedFiles(db: DatabaseSync): { path: string; sha256: string }[] {
   return db.prepare(`SELECT stored_path AS path, sha256 FROM source_files
                      UNION SELECT stored_path AS path, sha256 FROM photos WHERE stored_path IS NOT NULL
+                     UNION SELECT pdf_path AS path, pdf_sha256 AS sha256 FROM report_versions
                      ORDER BY path`).all() as { path: string; sha256: string }[]
 }
 
@@ -54,14 +56,16 @@ export async function backupStore(store: Store, options: { dest?: string; keep?:
   } finally {
     snapshot.close()
   }
+  // Asynchronous file work: the daily backup runs inside the web server and must not hold up requests while it copies
+  // thousands of photos (a docking holds about 3,000).
   for (const file of manifest.files) {
     const target = join(dest, "files", ...file.path.split("/"))
-    if (existsSync(target) && sha256(readFileSync(target)) === file.sha256) continue
+    if (existsSync(target) && sha256(await readFile(target)) === file.sha256) continue
     const source = join(store.root, ...file.path.split("/"))
-    const data = readFileSync(source)
+    const data = await readFile(source)
     if (sha256(data) !== file.sha256) throw new Error(`Backup stopped: the stored file ${file.path} is damaged (hash mismatch).`)
     mkdirSync(dirname(target), { recursive: true })
-    copyFileSync(source, target)
+    await copyFile(source, target)
   }
   writeFileSync(join(folder, "manifest.json"), JSON.stringify(manifest, null, 1))
 

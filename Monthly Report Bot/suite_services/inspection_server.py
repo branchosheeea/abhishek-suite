@@ -23,6 +23,11 @@ HOST = "127.0.0.1"  # local only; every API request also needs the session NeraV
 HEALTH_MARKER = '"neraveda-web"'  # returned by /api/health
 LEGACY_MARKER = "SIR Inspect"  # manifest of builds from before the web shell
 INSPECTIONS_PATH = "inspections"
+# Sources newer than the last build → build, then serve the build (next_build_and_start.mjs). Never `next dev` by default:
+# its file watcher reloads the page whenever OneDrive touches files in the app folder.
+BUILD_AND_START = Path(__file__).with_name("next_build_and_start.mjs")
+DEV_SWITCH = "NERAVEDA_WEB_DEV"  # =1: run `next dev` (for working on the app's code only)
+READY_TIMEOUT = {"build": 900.0}  # a first build can take several minutes; seconds
 SOURCE_ENTRIES = ("app", "components", "hooks", "lib", "public", "proxy.ts",
                   "next.config.mjs", "package.json", "postcss.config.mjs", "tsconfig.json")
 
@@ -85,12 +90,23 @@ def build_is_current(folder):
     return build_id.is_file() and build_id.stat().st_mtime >= _newest_source_mtime(Path(folder))
 
 
+def stale_build_mode():
+    """What to run when the build is missing or older than the sources."""
+    return "dev" if os.environ.get(DEV_SWITCH) == "1" else "build"
+
+
 def server_mode(folder):
-    return "start" if build_is_current(folder) else "dev"
+    return "start" if build_is_current(folder) else stale_build_mode()
+
+
+def ready_timeout(mode):
+    return READY_TIMEOUT.get(mode, 180.0)
 
 
 def server_command(node, folder, port, mode):
     next_bin = Path(folder) / "node_modules" / "next" / "dist" / "bin" / "next"
+    if mode == "build":
+        return [node, str(BUILD_AND_START), str(next_bin), "-H", HOST, "-p", str(port)]
     return [node, str(next_bin), mode, "-H", HOST, "-p", str(port)]
 
 
