@@ -8,13 +8,14 @@
 //
 // `import` takes a backup of the inspections database first, then writes in one transaction, and only if the preview
 // hash still matches (the workbook and the master are what you reviewed). The workbook itself is never modified.
-// Uses MONGODB_URI (from the environment or .env.local).
+// Uses MONGODB_URI and optional SIR_DNS_SERVERS (from the environment or .env.local).
 
 import { readFileSync, writeFileSync } from "node:fs"
 import { userInfo } from "node:os"
 import { join } from "node:path"
 import { MongoClient, type Db } from "mongodb"
 import { backupDatabase, backupRoot } from "../lib/server/mongo-backup"
+import { applyDnsOverride } from "../lib/server/dns-override"
 import { FIELD } from "../lib/vessel-master/fields"
 import { commitImport, planImport, type ImportPlan, type StoredVessel } from "../lib/vessel-master/import"
 import { ensureVesselIndexes, flagsOf, listVessels, mongoMasterStore, requireTransactions } from "../lib/vessel-master/repo"
@@ -37,6 +38,7 @@ const positional = rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && rest[
 async function withDb<T>(fn: (client: MongoClient, db: Db) => Promise<T>): Promise<T> {
   const uri = process.env.MONGODB_URI
   if (!uri) throw new Error("MONGODB_URI is not set (environment or .env.local).")
+  applyDnsOverride() // SIR_DNS_SERVERS, before the driver resolves mongodb+srv records
   const client = await new MongoClient(uri, { appName: "sir-vessel-master" }).connect()
   try {
     return await fn(client, client.db(LIVE))

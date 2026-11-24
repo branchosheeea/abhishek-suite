@@ -7,11 +7,12 @@
 //   npm run backup -- restore <snapshot folder> <new database name>
 //   npm run backup -- compare <snapshot folder> <database>     read-only: PASS only if the database matches the backup
 //
-// Uses MONGODB_URI (from the environment or .env.local). A restore never writes to the live "inspections" database: to
+// Uses MONGODB_URI and optional SIR_DNS_SERVERS (from the environment or .env.local). A restore never writes to the live "inspections" database: to
 // use restored data, check it first, then switch the app over deliberately.
 
 import { MongoClient } from "mongodb"
 import { compareInspections, formatComparison, type Collections } from "../lib/server/backup-compare"
+import { applyDnsOverride } from "../lib/server/dns-override"
 import { backupDatabase, backupRoot, restoreSnapshot, snapshotDocuments, snapshots, verifySnapshot } from "../lib/server/mongo-backup"
 
 const LIVE = "inspections"
@@ -21,6 +22,7 @@ const dest = backupRoot(LIVE)
 async function withDb<T>(name: string, fn: (db: ReturnType<MongoClient["db"]>) => Promise<T>): Promise<T> {
   const uri = process.env.MONGODB_URI
   if (!uri) throw new Error("MONGODB_URI is not set (environment or .env.local).")
+  applyDnsOverride() // SIR_DNS_SERVERS, before the driver resolves mongodb+srv records
   const client = await new MongoClient(uri, { appName: "sir-backup" }).connect()
   try {
     return await fn(client.db(name))
