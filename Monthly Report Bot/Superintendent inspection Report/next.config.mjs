@@ -7,6 +7,7 @@ const nextConfig = {
   },
   poweredByHeader: false,
   // NEXT_DIST_DIR=.next/verify lets a build be checked while NeraVeda's server keeps serving the current .next.
+  // (The build adds that folder's types to tsconfig.json: restore it with `git checkout -- tsconfig.json`, delete .next/verify.)
   distDir: process.env.NEXT_DIST_DIR || ".next",
   async headers() {
     // Another localhost page (any other local port) must not frame or probe this app.
