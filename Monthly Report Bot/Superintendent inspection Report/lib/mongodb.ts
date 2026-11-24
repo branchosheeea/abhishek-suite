@@ -21,6 +21,12 @@ export async function getDb(): Promise<Db> {
     db.collection("reports").createIndex({ updatedAt: -1 }),
     db.collection("photos").createIndex({ id: 1 }, { unique: true }),
     db.collection("photos").createIndex({ reportId: 1 }),
+    // Approved-report protection (lib/report-write.ts): audit trail, withdrawn approvals, deleted drafts.
+    db.collection("report_audit").createIndex({ reportId: 1, at: 1 }),
+    db.collection("report_revisions").createIndex({ reportId: 1, revision: 1 }, { unique: true }),
+    db.collection("report_revision_photos").createIndex({ revisionId: 1 }),
+    db.collection("reports_deleted").createIndex({ id: 1 }),
+    db.collection("photos_deleted").createIndex({ reportId: 1 }),
   ]).catch(() => {
     indexesReady = undefined
   })

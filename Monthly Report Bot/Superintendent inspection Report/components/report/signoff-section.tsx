@@ -251,30 +251,24 @@ export function SignoffSection({ report, photoCount, onWorklist, onSignoff, onDe
             disabledReason={
               fmLocked
                 ? "Available once the report is complete."
-                : !fm.name || !fm.date || dateProblem
-                  ? "Enter the Fleet Manager’s name and a valid approval date first."
-                  : undefined
+                : approved
+                  ? "Approved. To change it, withdraw the approval at the top of the page."
+                  : !fm.name || !fm.date || dateProblem
+                    ? "Enter the Fleet Manager’s name and a valid approval date first."
+                    : undefined
             }
             onChange={(v) => onSignoff({ fleetManagerSignature: v })}
           />
           {approved && (
-            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+            <div className="flex flex-col gap-1 text-sm">
               <span className="flex items-center gap-1.5 text-success">
                 <CircleCheck className="size-4" aria-hidden />
                 Approved
               </span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  if (window.confirm("Withdraw the Fleet Manager’s approval? The report returns to awaiting approval and the PDF will be marked DRAFT.")) {
-                    onSignoff({ fleetManagerSignature: "" })
-                  }
-                }}
-              >
-                Withdraw approval
-              </Button>
+              <span className="text-xs text-muted-foreground">
+                The report is now read-only. To correct it, use Withdraw approval at the top of the page: a reason is required, and the approved version is
+                kept in the cloud.
+              </span>
             </div>
           )}
         </section>

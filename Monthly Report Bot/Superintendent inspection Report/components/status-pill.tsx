@@ -26,6 +26,7 @@ export function SavePill({ state }: { state: SaveState }) {
   const online = useOnline()
   const view = (() => {
     if (state === "saving") return { icon: <Loader2 className="size-3.5 animate-spin" aria-hidden />, text: "Saving…" }
+    if (state === "locked") return { icon: <TriangleAlert className="size-3.5" aria-hidden />, text: "Not synced: report is approved" }
     if (state === "conflict") return { icon: <TriangleAlert className="size-3.5" aria-hidden />, text: "Not synced: changed elsewhere" }
     if (state === "sync-error") return { icon: <TriangleAlert className="size-3.5" aria-hidden />, text: "Saved locally, sync failed" }
     if (state === "synced") return { icon: <Cloud className="size-3.5" aria-hidden />, text: "Synced to cloud" }

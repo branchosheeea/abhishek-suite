@@ -31,6 +31,7 @@ import { SectionNav } from "./section-nav"
 import { SignoffSection } from "./signoff-section"
 import { SummarySection } from "./summary-section"
 import { SyncConflictBanner } from "./sync-conflict-banner"
+import { ApprovedBanner, LockedBanner } from "./approval-banner"
 import { SectionBuilder } from "./narrative/section-builder"
 import { CONDITION_ITEM_SECTIONS } from "@/lib/narrative/sections"
 import { applyLinkedChange, vesselNameMismatch } from "@/lib/linked-fields"
@@ -62,7 +63,8 @@ const DESCRIPTIONS: Partial<Record<SectionId, string>> = {
 type StringKeys = "details" | "particulars" | "summary" | "management"
 
 export function ReportEditor({ id }: { id: string }) {
-  const { report, photos, isLoading, saveState, conflict, resolveConflict, update, saveNow, addPhoto, updatePhoto, removePhoto } = useReportEditor(id)
+  const { report, photos, isLoading, saveState, approved, conflict, locked, resolveConflict, withdraw, update, saveNow, addPhoto, updatePhoto, removePhoto } =
+    useReportEditor(id)
   const [active, setActive] = useState<SectionId>("details")
   const [exporting, setExporting] = useState(false)
   const topRef = useRef<HTMLDivElement>(null)
@@ -132,7 +134,7 @@ export function ReportEditor({ id }: { id: string }) {
               <span className="font-mono text-xs text-muted-foreground">
                 {report.details.reportNo ? `#${report.details.reportNo}` : `Form ${FORM_CODE}`}
               </span>
-              <SavePill state={conflict ? "conflict" : saveState} />
+              <SavePill state={conflict ? "conflict" : locked ? "locked" : saveState} />
               <StagePill stage={reportStage(report, photos.length)} outstanding={outstanding.length} onClick={() => go("signoff")} />
             </div>
           </div>
@@ -155,7 +157,13 @@ export function ReportEditor({ id }: { id: string }) {
         </aside>
 
         <main className="min-w-0 flex-1 scroll-mt-32" ref={topRef}>
-          {conflict && <SyncConflictBanner conflict={conflict} onResolve={resolveConflict} />}
+          {conflict ? (
+            <SyncConflictBanner conflict={conflict} onResolve={resolveConflict} />
+          ) : locked ? (
+            <LockedBanner lock={locked} onWithdraw={withdraw} onResolve={resolveConflict} />
+          ) : approved ? (
+            <ApprovedBanner approvedBy={report.signoff.fleetManagerName ?? ""} approvedOn={report.signoff.fleetManagerDate ?? ""} onWithdraw={withdraw} />
+          ) : null}
           <div className="mb-6 flex flex-col gap-1">
             <p className="font-mono text-xs text-muted-foreground">
               Section {index + 1} of {SECTIONS.length}
@@ -173,6 +181,8 @@ export function ReportEditor({ id }: { id: string }) {
             ) : null}
           </div>
 
+          {/* An approved report is read-only: every control inside is disabled (the editor also ignores changes). */}
+          <fieldset disabled={approved} className="contents">
           <SectionBody
             active={active}
             report={report}
@@ -186,6 +196,7 @@ export function ReportEditor({ id }: { id: string }) {
             removePhoto={removePhoto}
             go={go}
           />
+          </fieldset>
 
           <div className="mt-10 flex items-center justify-between border-t pt-6">
             <Button variant="outline" disabled={index === 0} onClick={() => go(SECTIONS[index - 1].id)}>

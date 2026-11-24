@@ -48,7 +48,8 @@ Return paths: the sidebar (or the top bar on narrow screens) links to Home and e
 - Every API route except health needs the session NeraVeda opens the browser with: an HttpOnly `neraveda_sir` cookie, valid 12 h, for people who have this workspace.
 - Without it, the app shows "Open from NeraVeda". Drafts already in the browser stay there, and a failed load never creates an empty draft over a report.
 - Without network, the app shows an offline banner and keeps working on browser drafts.
-- Reports do not record yet which person saved them; the signed-in person is available to the API (`currentUser()`) for that.
+- Each report saved to the cloud records who saved it last and when (`savedBy`).
+- Approvals, withdrawn approvals, deletions and refused changes are recorded with the person in `report_audit` (see "Approved reports are protected" below).
 - See `docs/NERAVEDA_ACCESS.md` in `Monthly Report Bot`.
 
 ## Project structure
@@ -418,7 +419,39 @@ A report can be edited on two devices, in two browsers or in two tabs. Neither v
 - **Where the sync state is kept:** the cloud version each copy is based on, and any open conflict, are kept in the browser's localStorage (`sir-sync-state`). Only the sync code writes them; the editor's autosave never does. If they are lost, nothing is lost with them: the report's own `syncedAt` is used, and a conflict is found again on the next sync.
 - **Older versions:** before 24 Nov 2026, a refused save was treated as synced, and the next fetch replaced the local changes. A tab still running an older version sends no base version, and the server applies the previous rule to it (an older save is refused).
 
-Tests: `tests/sync-conflict.test.ts` runs two simulated devices against an in-memory cloud with the server's write rule.
+Tests: `tests/sync-conflict.test.ts` runs simulated devices against an in-memory cloud with the server's rules (`tests/report-cloud.helpers.ts`).
+
+### Approved reports are protected
+
+The Fleet Manager approves a report by entering a name and date and signing. From then on the report cannot be changed or deleted, unless the approval is withdrawn with a reason. The server enforces this (`lib/report-write.ts`), not only the screen.
+
+**What happens on approval:**
+- The report becomes read-only in the editor. A green banner says who approved it and when.
+- The cloud refuses any change to the report or its photos (answer 423). A save that changes nothing is accepted.
+- An approved report cannot be deleted. The delete button is disabled. If a device asks anyway, the cloud refuses, and the report comes back to that device on the next sync.
+
+**Withdrawing an approval:**
+- Use **Withdraw approval…** in the banner. Anyone with Inspection Reports can do it, but must give a reason (5 to 1,000 characters).
+- Before anything changes, the cloud keeps the approved version permanently, with its photos: `report_revisions` and `report_revision_photos`. It records the revision number, who withdrew it, when and why.
+- Only the Fleet Manager's signature is removed. The report is a draft again, and the PDF is marked DRAFT until it is approved again.
+- If the approval never reached the cloud (it was made on this device and not yet sent), it is withdrawn on the device only.
+
+**If the cloud refuses changes from a device** (for example a tab that was open before the approval):
+- The changes are kept on that device and not sent. The editor shows "This report has been approved … so the changes on this device were not saved", and the list shows **Changes not saved**.
+- There are three choices:
+  - **Withdraw approval and save my changes:** asks for the reason, then sends the changes.
+  - **Keep both:** the changes become a separate draft, without the Fleet Manager's signature.
+  - **Discard my changes:** shows the approved version again.
+
+**Deleting a draft:** the draft and its photos are moved to `reports_deleted` and `photos_deleted`, with who deleted it and when, so it can be recovered.
+
+**Audit trail:** `report_audit` records each approval, withdrawn approval, deletion and refused change, with the person (NeraVeda id and name). Each saved report also carries `savedBy`. The records are only ever added to, but this is enforced by the app, not by the database.
+
+**Old versions of the app:** an older tab's "Withdraw approval" only cleared the signature on that device, and the cloud now refuses it.
+
+**Not yet enforced by the server:** that every mandatory item is complete when a report is approved. The screen checks this, but the server does not, because photos reach the cloud after the report.
+
+Tests: `tests/approved-reports.test.ts`.
 
 ## Environment variables
 

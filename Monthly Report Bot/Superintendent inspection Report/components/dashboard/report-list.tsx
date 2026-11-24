@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { useOnline } from "@/hooks/use-online"
+import { isApproved } from "@/lib/completeness"
 import { FORM_CODE, createEmptyReport, overallProgress, type Report } from "@/lib/form-schema"
 import {
   deleteReportLocal,
@@ -27,7 +28,7 @@ import { WEB_MODULES } from "@/lib/modules"
 import { formatDate } from "@/lib/pdf"
 import { isPhotoDirty, isReportDirty, syncAll } from "@/lib/sync"
 
-type Row = { report: Report; photoCount: number; pending: boolean; conflict: boolean }
+type Row = { report: Report; photoCount: number; pending: boolean; issue: "conflict" | "locked" | null }
 
 const MODULE = WEB_MODULES.find((m) => m.id === "inspections")!
 
@@ -40,7 +41,10 @@ async function loadRows(): Promise<Row[]> {
         report,
         photoCount: photos.length,
         pending: isReportDirty(report) || Boolean(report.deletedPhotoIds?.length) || photos.some(isPhotoDirty),
-        conflict: Boolean(getSyncState(report.id).conflict),
+        issue: (() => {
+          const state = getSyncState(report.id)
+          return state.conflict ? "conflict" : state.locked ? "locked" : null
+        })(),
       }
     }),
   )
@@ -164,7 +168,8 @@ export function ReportList() {
             </div>
           ) : (
             <ul className="flex flex-col gap-3">
-              {rows.map(({ report, photoCount, pending, conflict }) => {
+              {rows.map(({ report, photoCount, pending, issue }) => {
+                const approved = isApproved(report)
                 const name = report.details.vessel || report.particulars.shipName || "Untitled inspection"
                 const progress = overallProgress(report, photoCount)
                 const meta = [
@@ -188,7 +193,11 @@ export function ReportList() {
                         >
                           {name}
                         </Link>
-                        {conflict ? (
+                        {issue === "locked" ? (
+                          <Badge variant="outline" className="border-destructive/60 text-destructive" title="The report was approved elsewhere: open it to choose what to do with this device's changes">
+                            Changes not saved
+                          </Badge>
+                        ) : issue === "conflict" ? (
                           <Badge variant="outline" className="border-destructive/60 text-destructive" title="Changed on another device or tab: open the report to choose what to keep">
                             Sync conflict
                           </Badge>
@@ -228,8 +237,9 @@ export function ReportList() {
                         variant="ghost"
                         size="icon-sm"
                         onClick={() => removeReport(report.id, name)}
-                        aria-label={`Delete ${name}`}
-                        title="Delete"
+                        disabled={approved}
+                        aria-label={approved ? `${name} is approved and cannot be deleted` : `Delete ${name}`}
+                        title={approved ? "Approved reports cannot be deleted. Withdraw the approval first." : "Delete"}
                       >
                         <Trash2 aria-hidden />
                       </Button>

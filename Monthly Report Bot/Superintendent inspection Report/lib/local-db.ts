@@ -56,12 +56,15 @@ export function setPendingReportDeletes(ids: string[]) {
 //   base      the cloud version this device's copy is based on (the cloud's updatedAt at the last sync)
 //   conflict  the cloud copy changed elsewhere since then; this device's copy is kept and not sent until the person
 //             chooses what to keep
+//   locked    the cloud copy has been approved, so the changes on this device were refused; they are kept here and
+//             not sent until the person withdraws the approval or chooses what to keep
 // If this is ever lost (site data cleared), nothing is lost with it: the copy's own syncedAt is used as the base, and a
 // conflict is detected again on the next sync.
 const SYNC_STATE_KEY = "sir-sync-state"
 
 export type SyncConflict = { serverUpdatedAt: number; detectedAt: number }
-export type SyncState = { base?: number; conflict?: SyncConflict }
+export type SyncLock = { approvedBy: string; approvedOn: string; serverUpdatedAt: number; detectedAt: number }
+export type SyncState = { base?: number; conflict?: SyncConflict; locked?: SyncLock }
 
 function readSyncStates(): Record<string, SyncState> {
   try {
@@ -79,7 +82,7 @@ export function getSyncState(id: string): SyncState {
 export function setSyncState(id: string, state: SyncState | null) {
   try {
     const all = readSyncStates()
-    if (state && (state.base !== undefined || state.conflict)) all[id] = state
+    if (state && (state.base !== undefined || state.conflict || state.locked)) all[id] = state
     else delete all[id]
     window.localStorage.setItem(SYNC_STATE_KEY, JSON.stringify(all))
   } catch {

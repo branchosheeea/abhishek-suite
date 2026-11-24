@@ -50,6 +50,15 @@ This is an offline-first web app for preparing Superintendent's Detailed Inspect
   - **Detection:** each save now carries the cloud version it is based on. The server writes only that version.
   - **On a conflict:** the device keeps its copy, stops syncing that report, and asks whether to keep both, use this device's version or use the cloud version.
   - **Tests:** `tests/sync-conflict.test.ts`. Details are in README.md under "When the same report is changed in two places".
+- Approved reports protected by the server (24 Nov 2026, audit item P0-2).
+  - **Before:** the cloud overwrote or permanently deleted any report, including approved ones, with no record. "Withdraw approval" only cleared the signature.
+  - **Now:** once the Fleet Manager has approved a report, it is read-only. The cloud refuses changes to it, its photos and its deletion.
+  - **Withdrawing an approval** needs a reason. The cloud keeps the approved version permanently, with who, when and why.
+  - **Deleted drafts** are kept in the cloud's deleted store.
+  - **Records:** approvals, withdrawals, deletions and refused changes are recorded in `report_audit`, and each saved report records who saved it.
+  - **Edit timestamps** now always move forward, so an edit counts as unsent even when this device's clock is behind.
+  - **Not yet enforced by the server:** that the report was complete when approved.
+  - **Tests:** `tests/approved-reports.test.ts`. Details are in README.md under "Approved reports are protected".
 
 ## Running locally
 
