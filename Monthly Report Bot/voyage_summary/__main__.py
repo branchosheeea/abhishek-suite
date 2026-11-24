@@ -1633,16 +1633,46 @@ class VoyageSummaryApp(ctk.CTk):
         return chip
 
 
+def startup_dataset(load=load_voyage_data, choose=None, confirm=None, show_error=None) -> VoyageDataset | None:
+    """The workbook to open at start-up: the default noon report if it is found, otherwise one the person chooses.
+
+    Before, a missing default report closed the workspace. Now the reason is shown and a file picker offered, again
+    after a file that cannot be read, until a workbook opens or the person cancels (None). The dialogs are passed in
+    so this can be tested without a window."""
+    try:
+        return load()
+    except (FileNotFoundError, PermissionError, ValueError) as exc:
+        reason = str(exc)
+    if not confirm(f"{reason}\n\nChoose a Noon at Sea report or a VoyageDataExtract workbook to open?"):
+        return None
+    while True:
+        selected = choose()
+        if not selected:
+            return None
+        try:
+            return load(Path(selected))
+        except (OSError, ValueError) as error:
+            show_error(f"{error}\n\nChoose another workbook, or cancel to close Voyage Summary.")
+
+
 def main() -> None:
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
+    dialog = tk.Tk()
+    dialog.withdraw()
     try:
-        dataset = load_voyage_data()
-    except (FileNotFoundError, PermissionError, ValueError) as exc:
-        dialog = tk.Tk()
-        dialog.withdraw()
-        messagebox.showerror("Voyage Summary — Noon Report", str(exc), parent=dialog)
+        dataset = startup_dataset(
+            choose=lambda: filedialog.askopenfilename(
+                parent=dialog, title="Open voyage workbook",
+                initialdir=str(Path.home() / "Downloads"),
+                filetypes=(("Excel workbooks", "*.xlsx"), ("All files", "*.*")),
+            ),
+            confirm=lambda text: messagebox.askokcancel("Voyage Summary — Noon Report", text, parent=dialog),
+            show_error=lambda text: messagebox.showerror("Voyage Summary — Workbook", text, parent=dialog),
+        )
+    finally:
         dialog.destroy()
+    if dataset is None:
         return
     app = VoyageSummaryApp(dataset)
     app.mainloop()

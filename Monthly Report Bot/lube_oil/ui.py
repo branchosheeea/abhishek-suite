@@ -764,10 +764,15 @@ class ReviewApp(ctk.CTk):
         self.update_idletasks()
         try:
             refreshed = self.repo.reprocess_stale_reports()
+            retried = self.repo.retry_failed_imports()
+            notes = []
             if refreshed:
-                self.status.configure(
-                    text=f"Updated analysis for {refreshed} archived report(s) using the current parser."
-                )
+                notes.append(f"Updated analysis for {refreshed} archived report(s) using the current parser.")
+            if retried:
+                recovered = sum(item["status"] != "Failed" for item in retried)
+                notes.append(f"Read again {len(retried)} file(s) that failed under an earlier parser; {recovered} now import.")
+            if notes:
+                self.status.configure(text=" ".join(notes))
             self.repo.activate_imported()
         except (OSError, RuntimeError, ValueError) as error:
             self.status.configure(text=f"Stored report refresh failed: {error}")
@@ -3801,12 +3806,63 @@ class ReviewApp(ctk.CTk):
                 messagebox.showerror("Review note", str(error), parent=window)
 
         self.button(actions, "Save note", save).pack(side="left")
+        if any(i["code"] == "vessel_unknown" for i in r["data"]["issues"]) and r.get("vessel_id") is None:
+            self.button(
+                actions, "Map vessel name…", lambda: self.map_vessel(r, window), True
+            ).pack(side="left", padx=(12, 0))
         self.button(actions, "Open original", lambda: self.open_original(r), True).pack(
             side="left", padx=12
         )
         self.button(actions, "Export evidence", lambda: self.export(r), True).pack(
             side="left"
         )
+
+    def map_vessel(self, report, parent):
+        """Say which fleet vessel a sheet's vessel name means (e.g. "M/T DHT COLT" is DHT COLT). Every sheet with that
+        name is then read again; the mapping is kept for future imports and recorded in the master-data audit."""
+        alias = report["data"].get("vessel") or ""
+        if not alias:
+            messagebox.showinfo(
+                "Map vessel name",
+                "This sheet has no vessel name to map. Correct the sheet and import it again.",
+                parent=parent,
+            )
+            return
+        window = ctk.CTkToplevel(parent)
+        window.title("Map vessel name")
+        window.geometry("520x240")
+        window.transient(parent)
+        self.label(window, "Which fleet vessel is this?", 17, bold=True).pack(anchor="w", padx=24, pady=(20, 6))
+        self.label(
+            window,
+            f"The sheet names the vessel “{alias}”. Choose the fleet vessel it means. "
+            "Every sheet with this name will be read again and used.",
+            12, MUTED, wraplength=470, justify="left",
+        ).pack(anchor="w", padx=24, pady=(0, 12))
+        choice = ctk.StringVar(value="")
+        ctk.CTkOptionMenu(window, values=self.repo.vessel_names(), variable=choice, width=260).pack(
+            anchor="w", padx=24
+        )
+        row = ctk.CTkFrame(window, fg_color="transparent")
+        row.pack(fill="x", padx=24, pady=16)
+
+        def save():
+            if not choice.get():
+                messagebox.showerror("Map vessel name", "Choose a fleet vessel.", parent=window)
+                return
+            try:
+                count = self.repo.map_vessel_alias(alias, choice.get())
+            except (ValueError, OSError, RuntimeError) as error:
+                messagebox.showerror("Map vessel name", str(error), parent=window)
+                return
+            vessel = choice.get()
+            window.destroy()
+            parent.destroy()
+            self.refresh()
+            self.status.configure(text=f"“{alias}” is now {vessel}; {count} sheet(s) read again.")
+
+        self.button(row, "Map", save).pack(side="left")
+        self.button(row, "Cancel", window.destroy, True).pack(side="left", padx=12)
 
     def open_original(self, report):
         try:

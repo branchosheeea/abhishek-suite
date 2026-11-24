@@ -130,45 +130,96 @@ class Repository:
         with connection(self.root) as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT id FROM report_files WHERE sha256=?", (sha,)).fetchone()
-            if existing:
+            if existing and not self._failed_without_report(db, existing[0]):
                 db.execute("INSERT INTO source_occurrences(file_id,source_path,seen_at,outcome) VALUES(?,?,?,?)",
                            (existing[0], str(path), now(), "duplicate"))
                 db.commit()
                 return dict(filename=path.name, status="Duplicate", detail="Original already archived; no duplicate report created.")
-            file_id = db.execute("INSERT INTO report_files(sha256,filename,archive_path,imported_at) VALUES(?,?,?,?)",
-                                 (sha, path.name, str(archived.relative_to(self.root)), now())).lastrowid
-            try:
-                payload = parse_workbook(archived, path.name)
-                vessel = db.execute("SELECT vessel_id FROM vessel_aliases WHERE alias=?", (payload["vessel"],)).fetchone()
-                vessel_id = vessel[0] if vessel else None
-                if vessel_id is None:
-                    payload["issues"].append(dict(code="vessel_unknown", title="Vessel identity requires mapping", detail="No reviewed Suite vessel alias matches this workbook.", fields=["vessel"], severity="FAIL"))
-                    payload["validation_status"] = "FAIL"
-                version = db.execute("SELECT COALESCE(MAX(report_version),0)+1 FROM monthly_reports WHERE vessel_id IS ? AND month IS ? AND report_type=?",
-                                     (vessel_id, payload["month"], "lub_oil_stock_consumption")).fetchone()[0]
-                if version > 1:
-                    payload["issues"].append(dict(code="revision", title="Another version exists for this month", detail="Import order does not establish chronology. Compare versions before confirming this report.", fields=[], severity="WARNING"))
-                    if payload["validation_status"] != "FAIL":
-                        payload["validation_status"] = "WARNING"
-                report_id = db.execute("""INSERT INTO monthly_reports(file_id,vessel_id,report_type,month,reporting_date,report_version,
-                    source_status,validation_status,payload) VALUES(?,?,?,?,?,?,?,?,?)""",
-                    (file_id, vessel_id, "lub_oil_stock_consumption", payload["month"], payload["reporting_date"], version,
-                     payload["source_status"], payload["validation_status"], json.dumps(payload, ensure_ascii=False))).lastrowid
-                self._audit(db, report_id, "imported", "Official vessel submission imported.")
-                detail = f"{payload['vessel']} · {payload['month']} · {payload['validation_status']}"
-                if self._usable(vessel_id, payload["month"], payload["validation_status"]):
-                    self._activate(db, report_id, vessel_id, payload["month"])
-                    status = "Imported"
-                else:
-                    status = "Not usable"
-                    detail += " · vessel or reporting month could not be identified"
-            except Exception as error:
-                status, detail = "Failed", f"{type(error).__name__}: {error}"
+            if existing:
+                # The same file failed before and never produced a report: read it again (the parser may have been fixed).
+                file_id = existing[0]
+            else:
+                file_id = db.execute("INSERT INTO report_files(sha256,filename,archive_path,imported_at) VALUES(?,?,?,?)",
+                                     (sha, path.name, str(archived.relative_to(self.root)), now())).lastrowid
+            status, detail = self._process(db, file_id, archived, path.name)
+            if existing:
+                detail += " · read again after an earlier failed import"
             db.execute("INSERT INTO processing_runs(file_id,parser_version,state,error,processed_at) VALUES(?,?,?,?,?)",
                        (file_id, VERSION, status, detail if status == "Failed" else None, now()))
             db.execute("INSERT INTO source_occurrences(file_id,source_path,seen_at,outcome) VALUES(?,?,?,?)", (file_id, str(path), now(), status))
             db.commit()
             return dict(filename=path.name, status=status, detail=detail)
+
+    @staticmethod
+    def _failed_without_report(db, file_id):
+        """The file's latest import attempt failed and it never produced a report (so importing it again may help)."""
+        if db.execute("SELECT 1 FROM monthly_reports WHERE file_id=?", (file_id,)).fetchone():
+            return False
+        last = db.execute("SELECT state FROM processing_runs WHERE file_id=? ORDER BY id DESC LIMIT 1", (file_id,)).fetchone()
+        return last is not None and last[0] == "Failed"
+
+    def _process(self, db, file_id, archived, filename):
+        """Parse an archived workbook into a report, inside the caller's transaction. Returns (status, detail).
+        A failure leaves nothing behind (savepoint), so the file can simply be read again later."""
+        db.execute("SAVEPOINT parse_report")
+        try:
+            payload = parse_workbook(archived, filename)
+            vessel = db.execute("SELECT vessel_id FROM vessel_aliases WHERE alias=?", (payload["vessel"],)).fetchone()
+            vessel_id = vessel[0] if vessel else None
+            if vessel_id is None:
+                payload["issues"].append(dict(code="vessel_unknown", title="Vessel identity requires mapping", detail="No reviewed Suite vessel alias matches this workbook.", fields=["vessel"], severity="FAIL"))
+                payload["validation_status"] = "FAIL"
+            version = db.execute("SELECT COALESCE(MAX(report_version),0)+1 FROM monthly_reports WHERE vessel_id IS ? AND month IS ? AND report_type=?",
+                                 (vessel_id, payload["month"], "lub_oil_stock_consumption")).fetchone()[0]
+            if version > 1:
+                payload["issues"].append(dict(code="revision", title="Another version exists for this month", detail="Import order does not establish chronology. Compare versions before confirming this report.", fields=[], severity="WARNING"))
+                if payload["validation_status"] != "FAIL":
+                    payload["validation_status"] = "WARNING"
+            report_id = db.execute("""INSERT INTO monthly_reports(file_id,vessel_id,report_type,month,reporting_date,report_version,
+                source_status,validation_status,payload) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (file_id, vessel_id, "lub_oil_stock_consumption", payload["month"], payload["reporting_date"], version,
+                 payload["source_status"], payload["validation_status"], json.dumps(payload, ensure_ascii=False))).lastrowid
+            self._audit(db, report_id, "imported", "Official vessel submission imported.")
+            detail = f"{payload['vessel']} · {payload['month']} · {payload['validation_status']}"
+            if self._usable(vessel_id, payload["month"], payload["validation_status"]):
+                self._activate(db, report_id, vessel_id, payload["month"])
+                status = "Imported"
+            else:
+                status = "Not usable"
+                detail += " · vessel or reporting month could not be identified"
+            db.execute("RELEASE parse_report")
+            return status, detail
+        except Exception as error:
+            db.execute("ROLLBACK TO parse_report")
+            db.execute("RELEASE parse_report")
+            return "Failed", f"{type(error).__name__}: {error}"
+
+    def retry_failed_imports(self):
+        """After a parser upgrade, read again the archived files that failed under an earlier parser version and never
+        produced a report. Files that failed under the current parser are left alone (they would fail the same way).
+        Returns one result per file read again."""
+        with connection(self.root) as db:
+            rows = db.execute(
+                """SELECT f.id, f.filename, f.archive_path FROM report_files f
+                   JOIN processing_runs p ON p.id = (SELECT MAX(q.id) FROM processing_runs q WHERE q.file_id = f.id)
+                   WHERE p.state = 'Failed' AND p.parser_version <> ?
+                     AND NOT EXISTS (SELECT 1 FROM monthly_reports m WHERE m.file_id = f.id)
+                   ORDER BY f.imported_at, f.id""", (VERSION,)).fetchall()
+        results = []
+        for row in rows:
+            with connection(self.root) as db:
+                db.execute("BEGIN IMMEDIATE")
+                if not self._failed_without_report(db, row["id"]):
+                    db.rollback()
+                    continue
+                status, detail = self._process(db, row["id"], self.root / row["archive_path"], row["filename"])
+                db.execute("INSERT INTO processing_runs(file_id,parser_version,state,error,processed_at) VALUES(?,?,?,?,?)",
+                           (row["id"], VERSION, status, detail if status == "Failed" else None, now()))
+                db.execute("INSERT INTO source_occurrences(file_id,source_path,seen_at,outcome) VALUES(?,?,?,?)",
+                           (row["id"], "(read again after a parser update)", now(), status))
+                db.commit()
+            results.append(dict(filename=row["filename"], status=status, detail=detail))
+        return results
 
     def import_paths(self, paths, emit=lambda result: None, stop=None):
         results = []
@@ -183,8 +234,11 @@ class Repository:
             emit(result)
         return results
 
-    def reprocess_stale_reports(self):
-        """Refresh stored parses after a parser upgrade without activating reports."""
+    def reprocess_stale_reports(self, report_ids=()):
+        """Refresh stored parses after a parser upgrade (and the reports in report_ids, e.g. after a vessel name is
+        mapped) without activating reports. A report in use that no longer passes validation is taken out of use and
+        the reason recorded; an older version is not brought back automatically."""
+        refresh = set(report_ids)
         with connection(self.root) as db:
             stale_rows = db.execute(
                 """SELECT r.id, r.vessel_id, r.report_type, r.month, r.is_active,
@@ -200,7 +254,7 @@ class Repository:
         updates = []
         for row in stale_rows:
             payload = json.loads(row["payload"])
-            if payload.get("parser_version") == VERSION:
+            if payload.get("parser_version") == VERSION and row["id"] not in refresh:
                 continue
             archived = self.root / row["archive_path"]
             payload = parse_workbook(archived, row["filename"])
@@ -261,6 +315,15 @@ class Repository:
                     "parser_refreshed",
                     f"Reparsed archived source using parser {VERSION}; report remains in its existing review state.",
                 )
+                if row["is_active"] and not self._usable(vessel_id, payload["month"], payload["validation_status"]):
+                    db.execute("UPDATE monthly_reports SET is_active=0 WHERE id=?", (row["id"],))
+                    self._audit(
+                        db,
+                        row["id"],
+                        "withdrawn",
+                        f"Taken out of use: read again with parser {VERSION}, it no longer passes validation "
+                        f"({payload['validation_status']}). Review the sheet; a corrected sheet can be imported.",
+                    )
                 updated_ids.append(row["id"])
 
             grouped = {}
@@ -350,9 +413,51 @@ class Repository:
         with connection(self.root) as db:
             return [dict(row) for row in db.execute("SELECT * FROM audit_events WHERE report_id=? ORDER BY id", (report_id,))]
 
-    def failures(self):
+    def vessel_names(self):
+        """The fleet vessels a sheet's vessel name can be mapped to."""
         with connection(self.root) as db:
-            return [dict(row) for row in db.execute("SELECT f.filename,p.error,p.processed_at FROM processing_runs p JOIN report_files f ON f.id=p.file_id WHERE p.state='Failed' ORDER BY p.id DESC")]
+            return [row[0] for row in db.execute("SELECT name FROM vessels ORDER BY name")]
+
+    def map_vessel_alias(self, alias, vessel):
+        """Record that the vessel name written in Lub Oil sheets (alias) means this fleet vessel, then read again the
+        sheets that could not be used because of it. Returns how many sheets were read again."""
+        alias = " ".join(str(alias or "").upper().split())  # as the parser writes the sheet's vessel name
+        if not alias:
+            raise ValueError("The sheet has no vessel name to map.")
+        with connection(self.root) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                target = db.execute("SELECT id FROM vessels WHERE name=?", (vessel,)).fetchone()
+                if target is None:
+                    raise ValueError(f"{vessel} is not a fleet vessel.")
+                current = db.execute("SELECT vessel_id FROM vessel_aliases WHERE alias=?", (alias,)).fetchone()
+                if current is not None and current[0] != target[0]:
+                    raise ValueError(f"“{alias}” is already mapped to another vessel.")
+                if current is None:
+                    db.execute("INSERT INTO vessel_aliases(alias,vessel_id) VALUES(?,?)", (alias, target[0]))
+                    self._master_audit(db, "vessel_aliases", alias, None, {"vessel": vessel},
+                                       "Vessel name written in Lub Oil sheets mapped to a fleet vessel")
+                affected = [row[0] for row in db.execute(
+                    "SELECT id FROM monthly_reports WHERE vessel_id IS NULL AND json_extract(payload, '$.vessel') = ?", (alias,))]
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        if affected:
+            self.reprocess_stale_reports(report_ids=affected)
+            self.activate_imported()
+        return len(affected)
+
+    def failures(self):
+        """Files whose latest import attempt failed and that never produced a report (as Home counts them): a file that
+        imported when read again is no longer listed."""
+        with connection(self.root) as db:
+            return [dict(row) for row in db.execute(
+                """SELECT f.filename, p.error, p.processed_at FROM processing_runs p JOIN report_files f ON f.id = p.file_id
+                   WHERE p.state = 'Failed'
+                     AND p.id = (SELECT MAX(q.id) FROM processing_runs q WHERE q.file_id = p.file_id)
+                     AND NOT EXISTS (SELECT 1 FROM monthly_reports m WHERE m.file_id = p.file_id)
+                   ORDER BY p.id DESC""")]
 
     # ---- Budget basis, reference prices and superintendent comments (master data) ----
     @staticmethod
