@@ -9,7 +9,7 @@ import { toast } from "sonner"
 import { ModuleBadge } from "@/components/shell/app-shell"
 import { OnlinePill } from "@/components/status-pill"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { useOnline } from "@/hooks/use-online"
 import { apiFetch } from "@/lib/api"
@@ -128,6 +128,11 @@ export function ReportList() {
             <span className="truncate text-sm font-semibold leading-tight">{MODULE.title}</span>
             <span className="font-mono text-xs text-muted-foreground">Form {FORM_CODE}</span>
           </div>
+          <Link href="/inspections/vessels" className={buttonVariants({ variant: "ghost", size: "sm" })}>
+            <Ship aria-hidden />
+            <span className="hidden sm:inline">Vessel Master</span>
+            <span className="sr-only sm:hidden">Vessel Master</span>
+          </Link>
           <OnlinePill />
           <Button
             variant="ghost"

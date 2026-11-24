@@ -82,7 +82,7 @@ export async function revisionsOf(db: Db, vesselId: string) {
 }
 
 export async function referenceRows(db: Db, workbookId: string | null) {
-  const filter = { "Vessel ID": { $in: [workbookId ?? "", "ALL"] } }
+  const filter = { "Vessel ID": { $in: workbookId ? [workbookId, "ALL"] : ["ALL"] } }
   const [sources, issues] = await Promise.all([
     db.collection(COLLECTIONS.sources).find(filter, NO_ID).toArray(),
     db.collection(COLLECTIONS.issues).find(filter, NO_ID).toArray(),
