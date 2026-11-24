@@ -1,6 +1,7 @@
 import "server-only"
 import { MongoClient, type Db } from "mongodb"
 import { backupRoot, dailyBackup, type BackupSource } from "./server/mongo-backup"
+import { ensureVesselIndexes } from "./vessel-master/repo"
 
 const globalForMongo = globalThis as unknown as { _mongoClient?: Promise<MongoClient>; __inspectionsBackupDay?: string }
 
@@ -28,6 +29,8 @@ export async function getDb(): Promise<Db> {
     db.collection("report_revision_photos").createIndex({ revisionId: 1 }),
     db.collection("reports_deleted").createIndex({ id: 1 }),
     db.collection("photos_deleted").createIndex({ reportId: 1 }),
+    // Vessel Master (lib/vessel-master/repo.ts).
+    ensureVesselIndexes(db),
   ]).catch(() => {
     indexesReady = undefined
   })
