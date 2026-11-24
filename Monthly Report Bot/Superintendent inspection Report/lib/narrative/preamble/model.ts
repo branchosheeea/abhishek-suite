@@ -253,8 +253,10 @@ export function isFieldVisible(field: PreambleField, inputs: PreambleInputs): bo
     case "otherLocation":
       return inputs.locationType === "OTHER"
     case "loadingCondition": {
-      const status = findOption(VESSEL_STATUSES, inputs.vesselStatus)
-      return Boolean(status && "loading" in status && status.loading)
+      // Asked once here for every status that does not already say laden or ballast; the rest of the report uses it.
+      // (Only statuses marked `loading` also print it in the Preamble sentence.)
+      const status = inputs.vesselStatus
+      return Boolean(status) && !["LADEN_PASSAGE", "BALLAST_PASSAGE", "SCHEDULED_DRY_DOCKING", "SPECIAL_SURVEY_DRY_DOCKING", "NEWBUILDING_PREPARATIONS"].includes(status)
     }
     case "customObjective":
       return has(inputs.primaryObjectives, "OTHER")

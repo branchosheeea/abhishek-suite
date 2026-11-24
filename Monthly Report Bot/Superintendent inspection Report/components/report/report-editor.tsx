@@ -30,6 +30,8 @@ import { ScopeSection } from "./scope-section"
 import { SectionNav } from "./section-nav"
 import { SignoffSection } from "./signoff-section"
 import { SummarySection } from "./summary-section"
+import { SectionBuilder } from "./narrative/section-builder"
+import { CONDITION_ITEM_SECTIONS } from "@/lib/narrative/sections"
 import { applyLinkedChange, vesselNameMismatch } from "@/lib/linked-fields"
 import { outstandingBySection, outstandingForReview, reportStage } from "@/lib/completeness"
 import { AlertCircle, BadgeCheck, ShieldCheck } from "lucide-react"
@@ -39,7 +41,7 @@ const DESCRIPTIONS: Partial<Record<SectionId, string>> = {
   particulars: "Key particulars of the vessel. Pre-fill once and reuse for future inspections.",
   summary: "Each part is built from structured selections and checked against the rest of this report.",
   scope: "Tick every area covered during this inspection.",
-  hull: "Inspect hull structure, coating, markings, and record findings.",
+  hull: "Rate the hull, then build the remarks from what was seen and how: plating, markings, coating, underwater inspection and performance.",
   mainDeck: "Inspect the main deck and record findings.",
   cargoBallast: "Inspect cargo and water ballast tanks, and record findings.",
   deckMachinery: "Inspect deck machinery and cargo handling equipment.",
@@ -276,7 +278,25 @@ function SectionBody({ active, report, photos, setString, setCondition, update, 
       return <ScopeSection values={report.scope} onChange={(scope) => update((r) => ({ ...r, scope }))} />
     case "hull": case "mainDeck": case "cargoBallast": case "deckMachinery": case "accommodation": case "safety": case "navigation": case "engine": {
       const section = CONDITION_SECTIONS.find((entry) => entry.id === active)!
-      return <ConditionList items={section.items} values={section.source === "deck" ? report.deck : report.engine} idPrefix={active} onChange={setCondition(section.source)} />
+      // Items whose remarks are written by a structured builder (e.g. Hull), as on the Executive Summary page.
+      const builders = section.items.flatMap((item) => {
+        const spec = CONDITION_ITEM_SECTIONS[item.key]
+        return spec ? [{ key: item.key, spec }] : []
+      })
+      return (
+        <div className="flex flex-col gap-6">
+          <ConditionList
+            items={section.items}
+            values={section.source === "deck" ? report.deck : report.engine}
+            idPrefix={active}
+            onChange={setCondition(section.source)}
+            builtRemarks={Object.fromEntries(builders.map((b) => [b.key, `${b.spec.title} remarks builder`]))}
+          />
+          {builders.map((b) => (
+            <SectionBuilder key={b.spec.id} spec={b.spec} report={report} update={update} saveNow={saveNow} />
+          ))}
+        </div>
+      )
     }
     case "critical":
       return (

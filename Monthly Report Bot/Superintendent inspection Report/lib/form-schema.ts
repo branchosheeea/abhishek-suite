@@ -470,7 +470,13 @@ export function emptyFinding(safetyCritical = false): Finding {
   return { action: "", priority: "", dueDate: "", safetyCritical, raStatus: "", raRef: "", defectRef: "", status: "open" }
 }
 
-export type ConditionEntry = { rating: Rating; remarks: string; finding?: Finding }
+export type ConditionEntry = {
+  rating: Rating
+  remarks: string
+  finding?: Finding
+  /** Short statement of the defect for the findings register, written by a remarks builder (e.g. Hull). */
+  summary?: string
+}
 
 /** Result of a critical-equipment test (ISM Code 10.3). A defect carries its description and a finding. */
 export type CriticalResult = { result: "satisfactory" | "defect" | ""; description?: string; finding?: Finding }

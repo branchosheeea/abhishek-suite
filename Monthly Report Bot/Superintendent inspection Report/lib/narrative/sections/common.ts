@@ -2,7 +2,7 @@
 // Wording rules: formal British English; state what was verified and how; never infer a condition, a test or
 // a result that the Superintendent did not select.
 
-import { ratedAs, type RatedItem, type ReportContext } from "../context"
+import { LOADING_WORDS, SITUATION_WORDS, ratedAs, type RatedItem, type ReportContext } from "../context"
 import type { ItemValue, OptionDef, SectionInputs } from "../section"
 import { joinList } from "../text"
 
@@ -24,6 +24,31 @@ export function assessment(id: unknown) {
 
 export const isAdverse = (id: unknown) => id === "FAIR" || id === "POOR"
 export const isFavourable = (id: unknown) => id === "GOOD" || id === "SATISFACTORY"
+
+/**
+ * The vessel's condition as stated in the Preamble, for the "From the Preamble" line of a builder.
+ * Says so when it is not stated, so the writer knows where to record it once.
+ */
+export function vesselConditionFacts(ctx: ReportContext): [string, string][] {
+  const { loading, situation } = ctx.vesselCondition
+  const parts = [loading ? LOADING_WORDS[loading] : "", situation ? SITUATION_WORDS[situation] : ""].filter(Boolean)
+  return [["Vessel condition (from the Preamble)", parts.length ? parts.join(", ") : "not stated – set it in the Preamble"]]
+}
+
+/** Whole months from an ISO date to another (null when either is missing). */
+export function monthsBetween(from: string, to: string) {
+  const a = /^(\d{4})-(\d{2})/.exec(from)
+  const b = /^(\d{4})-(\d{2})/.exec(to)
+  if (!a || !b) return null
+  return (Number(b[1]) - Number(a[1])) * 12 + (Number(b[2]) - Number(a[2]))
+}
+
+/** "about 7 months" / "about 2.5 years": the age of the coating at the attendance. */
+export function ageWords(months: number) {
+  if (months < 12) return `about ${Math.max(months, 1)} month${months === 1 ? "" : "s"}`
+  const years = Math.round((months / 12) * 2) / 2
+  return `about ${years % 1 ? years.toFixed(1) : years} year${years === 1 ? "" : "s"}`
+}
 
 // --- Reading inputs -----------------------------------------------------------------------------------------------
 

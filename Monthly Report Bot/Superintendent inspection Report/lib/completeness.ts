@@ -22,6 +22,7 @@ import {
   type Report,
   type SectionId,
 } from "./form-schema"
+import { CONDITION_ITEM_SECTIONS } from "./narrative/sections"
 
 export type Outstanding = { section: SectionId; label: string }
 
@@ -88,6 +89,9 @@ export function outstandingForReview(report: Report, photoCount: number): Outsta
         if (needsRemarks(rating) && !filled(entry.remarks)) {
           const what = rating === "notInspected" ? "reason it was not inspected" : `remarks (rated ${ratingLabel(rating)})`
           out.push({ section: section.id, label: `${item.label}: ${what}` })
+        } else if (CONDITION_ITEM_SECTIONS[item.key] && rating !== "na" && !filled(entry.remarks) && !approvedEarlier) {
+          // Items with a remarks builder (e.g. Hull) always need their description, as the Executive Summary does.
+          out.push({ section: section.id, label: `${item.label}: remarks (save the text from the ${CONDITION_ITEM_SECTIONS[item.key]!.title} builder)` })
         }
         if (needsFinding(rating)) findingOutstanding(section.id, item.label, rating === "deficient", entry.finding, out)
       }

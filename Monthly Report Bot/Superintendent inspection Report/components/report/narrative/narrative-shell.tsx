@@ -21,6 +21,9 @@ type Props<S extends NarrativeState<Record<string, unknown>>> = {
   report: Report
   saveNow: Editor["saveNow"]
   summaryKey: string
+  /** Reads / writes the saved text; default `report.summary[summaryKey]`. */
+  readText?: (report: Report) => string
+  writeText?: (report: Report, text: string) => Partial<Report>
   heading: string
   description?: string
   state: S
@@ -61,6 +64,8 @@ export function NarrativeShell<S extends NarrativeState<Record<string, unknown>>
   report,
   saveNow,
   summaryKey,
+  readText,
+  writeText,
   heading,
   description,
   state,
@@ -74,7 +79,9 @@ export function NarrativeShell<S extends NarrativeState<Record<string, unknown>>
   children,
 }: Props<S>) {
   const locked = state.status === "FINAL"
-  const savedText = (report.summary[summaryKey] ?? "").trim()
+  const readSaved = readText ?? ((r: Report) => r.summary[summaryKey] ?? "")
+  const writeSaved = writeText ?? ((r: Report, text: string) => ({ summary: { ...r.summary, [summaryKey]: text } }))
+  const savedText = readSaved(report).trim()
   const savedState: SavedTextState = !savedText
     ? "none"
     : savedText !== state.generatedText.trim()
@@ -109,7 +116,7 @@ export function NarrativeShell<S extends NarrativeState<Record<string, unknown>>
     const now = Date.now()
     change(
       () => ({ generatedText: text, lastGeneratedAt: now, ...(status ? { status } : {}) }) as Partial<S>,
-      (r) => ({ summary: { ...r.summary, [summaryKey]: text } }),
+      (r) => writeSaved(r, text),
     )
     return true
   }
@@ -222,7 +229,7 @@ export function NarrativeShell<S extends NarrativeState<Record<string, unknown>>
           <summary className="cursor-pointer font-medium outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
             This report already has text here that was not produced by the builder. It stays in the report until you save the generated text.
           </summary>
-          <p className="mt-2 whitespace-pre-line text-muted-foreground">{report.summary[summaryKey]}</p>
+          <p className="mt-2 whitespace-pre-line text-muted-foreground">{readSaved(report)}</p>
         </details>
       )}
 

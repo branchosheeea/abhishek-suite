@@ -12,7 +12,37 @@ import {
   type Rating,
   type Report,
 } from "../form-schema"
-import { normalisePreambleInputs, type PreambleInputs } from "./preamble/model"
+import { normalisePreambleInputs, pruneHidden, type PreambleInputs } from "./preamble/model"
+import { DRY_DOCK_STATUSES, SAILING_STATUSES } from "./preamble/options"
+
+export type VesselCondition = { loading: "LADEN" | "BALLAST" | ""; situation: "SEA" | "PORT" | "DRY_DOCK" | "" }
+
+const PORT_STATUSES = ["ALONGSIDE", "AT_ANCHORAGE", "CARGO_OPERATIONS", "BUNKERING_OPERATIONS"]
+
+/** Laden / ballast and sea / port / dry-dock from the Preamble selections. */
+export function vesselConditionFrom(raw: PreambleInputs): VesselCondition {
+  // Only what the Preamble actually shows counts (a hidden, stale laden/ballast answer is ignored).
+  const p = pruneHidden(raw)
+  const status = p.vesselStatus
+  const loading =
+    status === "LADEN_PASSAGE" || p.loadingCondition === "LADEN" || p.operatingCondition === "LADEN_SEAGOING"
+      ? "LADEN"
+      : status === "BALLAST_PASSAGE" || p.loadingCondition === "BALLAST" || p.operatingCondition === "BALLAST_SEAGOING"
+        ? "BALLAST"
+        : ""
+  const situation =
+    status && (DRY_DOCK_STATUSES as readonly string[]).includes(status)
+      ? "DRY_DOCK"
+      : (status && ((SAILING_STATUSES as readonly string[]).includes(status) || status === "MAIDEN_VOYAGE")) || p.locationType === "AT_SEA"
+        ? "SEA"
+        : status && PORT_STATUSES.includes(status)
+          ? "PORT"
+          : ""
+  return { loading, situation }
+}
+
+export const LOADING_WORDS = { LADEN: "laden", BALLAST: "ballast" } as const
+export const SITUATION_WORDS = { SEA: "at sea", PORT: "in port", DRY_DOCK: "in dry-dock" } as const
 
 export type RatedItem = { key: string; label: string; area: "deck" | "engine"; section: string; rating: Rating }
 
@@ -28,6 +58,13 @@ export type ReportContext = {
   critical: { tested: string[]; defects: string[]; total: number }
   /** Whole years since the year of build (Principal Particulars), at the attendance start; null when unknown. */
   vesselAge: number | null
+  /**
+   * The vessel's condition during the attendance, stated once in the Preamble and carried through the whole report:
+   * laden or ballast, and whether she was at sea, in port or in dry-dock ("" when the Preamble does not say).
+   */
+  vesselCondition: VesselCondition
+  /** Saved selections of the other narrative sections (raw), for cross-checks between them. */
+  sectionInputs: Partial<Record<string, Record<string, unknown>>>
 }
 
 function ageAt(yearBuilt: string | undefined, startDate: string) {
@@ -53,14 +90,19 @@ export function buildReportContext(report: Report): ReportContext {
   const results = report.criticalResults ?? {}
   const tested = CRITICAL_EQUIPMENT_ITEMS.filter((item) => isCriticalTested(item, report.management) || results[item.key]?.result).map((item) => item.label)
   const defects = CRITICAL_EQUIPMENT_ITEMS.filter((item) => results[item.key]?.result === "defect").map((item) => item.label)
+  const preamble = normalisePreambleInputs(report.narratives?.preamble?.inputs, { port: report.details?.port })
   return {
     vesselName: report.details?.vessel ?? "",
     startDate: report.details?.dateFrom ?? "",
     endDate: report.details?.dateTo ?? "",
-    preamble: normalisePreambleInputs(report.narratives?.preamble?.inputs, { port: report.details?.port }),
+    preamble,
+    vesselCondition: vesselConditionFrom(preamble),
     items,
     critical: { tested, defects, total: CRITICAL_EQUIPMENT_ITEMS.length },
     vesselAge: ageAt(report.particulars?.yearBuilt, report.details?.dateFrom ?? ""),
+    sectionInputs: Object.fromEntries(
+      Object.entries(report.narratives ?? {}).map(([key, value]) => [key, ((value as { inputs?: Record<string, unknown> } | undefined)?.inputs ?? {})]),
+    ),
   }
 }
 
@@ -75,6 +117,8 @@ export function emptyReportContext(patch: Partial<ReportContext> = {}): ReportCo
       ...ENGINE_ITEMS.map((i) => ({ key: i.key, label: i.label, area: "engine" as const, section: "Engine Room", rating: "" as Rating }))],
     critical: { tested: [], defects: [], total: CRITICAL_EQUIPMENT_ITEMS.length },
     vesselAge: null,
+    sectionInputs: {},
+    vesselCondition: { loading: "", situation: "" },
     ...patch,
   }
 }

@@ -339,24 +339,61 @@ class AutomationSuite(ctk.CTk):
 
         self._layout(self._logical_width())
         self.bind("<Configure>", self._on_resize, add="+")
+        # The window may already be maximised before the resize handler is bound (no later resize event then):
+        # re-check against the real window once it is on screen, and again whenever it is shown.
+        self.bind("<Map>", lambda event: self.after(60, self._relayout_to_window) if event.widget is self else None, add="+")
+        self.after(150, self._relayout_to_window)
+        self.after(600, self._relayout_to_window)
         self.scroll_router.attach(page)
         self.render_intelligence()
         self.refresh_intelligence(fetch_sir=True)
         self._schedule_access_refresh()
 
-    def _fit_to_screen(self):
-        """1240x800 where it fits; otherwise the available screen, so nothing sits under the taskbar."""
+    def _available_screen(self):
+        """The usable screen (without the taskbar) in logical, scaled pixels: the unit window sizes are given in.
+
+        Windows reports the work area in physical pixels; it is divided by the display scaling exactly once.
+        (Tk's own screen size is already scaled under customtkinter, so dividing that again made the screen look
+        a third smaller at 150% and opened the window at its minimum size.)"""
+        scale = ctk.ScalingTracker.get_window_scaling(self) or 1.0
         try:
-            scale = ctk.ScalingTracker.get_window_scaling(self)
-            width = min(1240, int(self.winfo_screenwidth() / scale) - 40)
-            height = min(800, int(self.winfo_screenheight() / scale) - 90)
+            import ctypes
+            from ctypes import wintypes
+            area = wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(area), 0):  # SPI_GETWORKAREA
+                return (area.right - area.left) / scale, (area.bottom - area.top) / scale
         except Exception:
-            width, height = 1240, 800
-        self.geometry(f"{max(width, 980)}x{max(height, 600)}")
+            pass
+        return float(self.winfo_screenwidth()), float(self.winfo_screenheight())
+
+    def _fit_to_screen(self):
+        """1240x800 where it fits comfortably; on screens where that would fill nearly everything (a laptop at
+        125–150% scaling), open maximised instead, which reads better for a dashboard."""
+        try:
+            screen_w, screen_h = self._available_screen()
+        except Exception:
+            screen_w, screen_h = 1600.0, 900.0
+        width = int(min(1240, screen_w - 40))
+        height = int(min(800, screen_h - 40))
         self._initial_size = (max(width, 980), max(height, 600))
+        self.geometry(f"{self._initial_size[0]}x{self._initial_size[1]}")
+        self._open_maximised = screen_w < 1240 / 0.9 or screen_h < 800 / 0.9
+        if self._open_maximised:
+            self.after(0, lambda: self.state("zoomed"))
 
     def _logical_width(self):
         return self._initial_size[0]
+
+    def _relayout_to_window(self):
+        """Lay the cards out for the window as it really is once shown: maximised by Windows or a shortcut,
+        restored to a remembered size, or moved to a screen with another scaling all end up correct."""
+        try:
+            scale = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+            width = self.winfo_width() / scale
+        except Exception:
+            return
+        if width > 1 and abs(width - (self.content_width + SIDEBAR_WIDTH + 70)) > 6:
+            self._layout(width)
 
     # ── Header (fixed) ────────────────────────────────────────────────────────
 
@@ -446,7 +483,9 @@ class AutomationSuite(ctk.CTk):
             card = self._card_by_key[key]
             self._nav_rows[key] = self._nav_item(sidebar, key, nav_name, lambda c=card: self._scroll_to(c))
 
-        ctk.CTkFrame(sidebar, fg_color="transparent").pack(fill="both", expand=True)
+        # Spacer: takes only the leftover height (height=1). With the default 200 px request it kept its space
+        # when the list grew and squeezed the tagline and version off the bottom instead.
+        ctk.CTkFrame(sidebar, fg_color="transparent", height=1).pack(fill="both", expand=True)
         ctk.CTkFrame(sidebar, height=1, fg_color=NAV_HV).pack(fill="x", padx=20, pady=(0, 12))
         self.sidebar_tagline = self._txt(sidebar, "Smarter Data.\nSharper Decisions.\nSmoother Sailing.", 12,
                                          NAV_TEXT, justify="left")

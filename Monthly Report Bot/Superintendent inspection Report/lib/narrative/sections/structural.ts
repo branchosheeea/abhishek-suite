@@ -7,6 +7,8 @@
 import { compareIsoDates, formatDate, formatMonthYear } from "../dates"
 import { gap, joinClauses, joinList, sentence } from "../text"
 import { para, type SectionSpec } from "../section"
+import { UNDERWATER_FIELDS, monthsSinceUnderwater, underwaterSentences } from "./underwater"
+import { vesselConditionFacts } from "./common"
 import { ASSESSMENTS, HULL_KEYS, STRUCTURE_KEYS, TANK_KEYS, deficientItems, assessment, flag, has, isFavourable, itemNames, list, phrases, str } from "./common"
 
 const HULL_STRUCTURE = [
@@ -16,33 +18,7 @@ const HULL_STRUCTURE = [
   { id: "FENDER_DAMAGE", label: "Coating damage from fender contact", phrase: "coating damage from fender contact was noted" },
 ] as const
 
-const UW_STATUS = [
-  { id: "THIS_ATTENDANCE", label: "Carried out during this attendance" },
-  { id: "PREVIOUS", label: "Carried out previously" },
-  { id: "PLANNED", label: "Planned" },
-  { id: "NOT_POSSIBLE", label: "Arranged but could not be carried out" },
-  { id: "IN_DRY_DOCK", label: "Inspected in dry-dock" },
-] as const
-
-const UW_REASON = [
-  { id: "CURRENT", label: "Strong currents", phrase: "because of strong currents" },
-  { id: "PORT", label: "Port restrictions", phrase: "because of port restrictions" },
-  { id: "WEATHER", label: "Weather", phrase: "because of the weather conditions" },
-  { id: "TIME", label: "Time constraints", phrase: "because of time constraints" },
-] as const
-
-const UW_FINDINGS = [
-  { id: "NO_FOULING", label: "Hull free of significant fouling", phrase: "the hull was free of significant fouling" },
-  { id: "MINIMAL_FOULING", label: "Minimal fouling", phrase: "minimal fouling was found" },
-  { id: "PARTLY_CLEANED", label: "Hull only partly cleaned", phrase: "the hull was only partly cleaned" },
-  { id: "PROP_POLISHED", label: "Propeller slime removed by polishing", phrase: "slime and algae on the propeller were removed by polishing" },
-  { id: "SEA_CHESTS", label: "Fouled sea chest gratings cleaned", phrase: "fouled sea chest gratings were cleaned" },
-  { id: "AF_GOOD", label: "Antifouling satisfactory (paint maker attended)", phrase: "the paint maker’s representative assessed the antifouling coating as satisfactory" },
-  { id: "AF_DEGRADED", label: "Antifouling degradation noted", phrase: "antifouling coating degradation was noted" },
-  { id: "RUDDER_ESD", label: "Rudder, propeller and ESD inspected in dock", phrase: "the rudder, propeller and energy-saving device were inspected and found in good condition" },
-] as const
-
-const DECK_RUST = [
+export const DECK_RUST = [
   { id: "NONE", label: "No rust spots", phrase: "no rust spots were noted" },
   { id: "LT_0_1", label: "Rust spots < 0.1% of deck area", phrase: "rust spots covered less than 0.1% of the deck area" },
   { id: "LT_1", label: "Rust spots < 1% of deck area", phrase: "rust spots covered less than 1% of the deck area" },
@@ -50,7 +26,7 @@ const DECK_RUST = [
   { id: "SIGNIFICANT", label: "Significant rust requiring attention", phrase: "significant rust requiring attention was noted" },
 ] as const
 
-const DECK_OBSERVATIONS = [
+export const DECK_OBSERVATIONS = [
   { id: "NO_CORROSION", label: "Plating, pipelines and fittings sound", phrase: "deck plating, pipelines and fittings were free from significant corrosion, cracking or fatigue" },
   { id: "SUPPORTS", label: "Pipe supports, vents and coamings good", phrase: "deck pipe supports, vent pipes, railings and tank coamings were in good condition" },
   { id: "HELIDECK", label: "Helicopter area well marked", phrase: "the helicopter area was well marked" },
@@ -58,13 +34,13 @@ const DECK_OBSERVATIONS = [
   { id: "MANHOLE_WEEPING", label: "Rust weeping at domes and manholes", phrase: "rust weeping at tank domes and manholes is to be de-rusted and painted" },
 ] as const
 
-const CASING = [
+export const CASING = [
   { id: "CLEAN", label: "Clean, no stains or leaks", phrase: "The engine room casing and funnel were clean and free of stains and leaks" },
   { id: "STAINS", label: "Weeping stains / spot corrosion planned", phrase: "Weeping stains and spot corrosion on the engine casing and funnel have been included in the maintenance plan" },
   { id: "SOOT", label: "Soot staining from the funnel", phrase: "Soot staining from the funnel was noted on the casing and sunken deck" },
 ] as const
 
-const EGCS_TOWER = [
+export const EGCS_TOWER = [
   { id: "SATISFACTORY", label: "Tower and attachments satisfactory", phrase: "the EGCS tower and its structural attachments were in satisfactory condition" },
   { id: "WEEPING", label: "Weeping marks need early attention", phrase: "weeping marks on the EGCS tower require early attention" },
   { id: "PIPING_MONITOR", label: "EGCS sea water piping under close watch", phrase: "the EGCS sea water piping requires close monitoring because of previous damage, and spare pipes have been supplied" },
@@ -134,8 +110,6 @@ const CLASS_STATUS = [
   { id: "COC", label: "Conditions of Class outstanding", phrase: "Conditions of Class are outstanding and are reported under Significant Problems" },
 ] as const
 
-const uw = (s: Record<string, unknown>) => str(s, "uwStatus")
-
 export const STRUCTURAL_SECTION: SectionSpec = {
   id: "structuralCondition",
   summaryKey: "structural",
@@ -154,13 +128,7 @@ export const STRUCTURAL_SECTION: SectionSpec = {
     {
       title: "Underwater hull and propeller",
       fields: [
-        { kind: "select", key: "uwStatus", label: "Underwater inspection and propeller polishing", options: UW_STATUS, placeholder: "Not reported" },
-        { kind: "text", key: "uwPlace", label: "Place", required: true, placeholder: "e.g. Singapore", showIf: (s) => ["THIS_ATTENDANCE", "PREVIOUS", "PLANNED", "NOT_POSSIBLE"].includes(uw(s)) },
-        { kind: "date", key: "uwDate", label: "Date", required: true, showIf: (s) => uw(s) === "PREVIOUS" },
-        { kind: "date", key: "uwPlannedDate", label: "Date (if known)", showIf: (s) => uw(s) === "PLANNED" || uw(s) === "NOT_POSSIBLE" },
-        { kind: "select", key: "uwReason", label: "Reason", required: true, options: UW_REASON, showIf: (s) => uw(s) === "NOT_POSSIBLE" },
-        { kind: "confirm", key: "uwSms", label: "Within the SMS six-monthly interval", showIf: (s) => uw(s) === "THIS_ATTENDANCE" || uw(s) === "PREVIOUS" },
-        { kind: "multi", key: "uwFindings", label: "Findings", options: UW_FINDINGS, columns: 2, showIf: (s) => ["THIS_ATTENDANCE", "PREVIOUS", "IN_DRY_DOCK"].includes(uw(s)) },
+        ...UNDERWATER_FIELDS,
       ],
     },
     {
@@ -215,24 +183,9 @@ export const STRUCTURAL_SECTION: SectionSpec = {
     const hull = hullPhrases.length ? sentence(`Above the waterline, ${joinClauses(hullPhrases)}`) : ""
 
     // 2. Underwater hull and propeller
-    const status = str(i, "uwStatus")
-    const place = str(i, "uwPlace")
-    const sms = flag(i, "uwSms") ? ", within the six-monthly interval required by the SMS" : ""
-    const findings = phrases(UW_FINDINGS, list(i, "uwFindings"))
-    const plannedOn = formatDate(str(i, "uwPlannedDate"))
-    let underwater = ""
-    if (status === "THIS_ATTENDANCE") underwater = sentence(`An underwater hull inspection and propeller polishing were carried out at ${place || gap("place")} during this attendance${sms}`)
-    else if (status === "PREVIOUS") {
-      const on = formatDate(str(i, "uwDate"))
-      underwater = sentence(`The last underwater hull inspection and propeller polishing were carried out at ${place || gap("place")}${on ? ` on ${on}` : ` ${gap("date")}`}${sms}`)
-    } else if (status === "PLANNED") underwater = sentence(`An underwater hull inspection and propeller polishing are planned at ${place || gap("place")}${plannedOn ? ` on ${plannedOn}` : ""}`)
-    else if (status === "NOT_POSSIBLE") {
-      const reason = UW_REASON.find((r) => r.id === str(i, "uwReason"))?.phrase
-      underwater = sentence(
-        `An underwater hull inspection and propeller polishing arranged at ${place || gap("place")}${plannedOn ? ` on ${plannedOn}` : ""} could not be carried out ${reason ?? gap("reason")}, and will be rearranged at the first opportunity`,
-      )
-    } else if (status === "IN_DRY_DOCK") underwater = sentence("The underwater hull and propeller were inspected during the recent dry-docking")
-    const uwFindings = underwater && findings.length ? sentence(joinClauses(findings)) : ""
+    const uw = underwaterSentences(i)
+    const underwater = uw.text
+    const uwFindings = uw.findings.length ? sentence(joinClauses(uw.findings)) : ""
 
     // 3. Deck, superstructure and casings
     const rust = DECK_RUST.find((o) => o.id === str(i, "deckRust"))?.phrase
@@ -301,7 +254,16 @@ export const STRUCTURAL_SECTION: SectionSpec = {
     ]
   },
 
+  facts: vesselConditionFacts,
+
   validate(i, ctx, { error, warn }) {
+    const { loading } = ctx.vesselCondition
+    if (loading === "LADEN" && str(i, "wbtReason") === "BALLASTED" && has(i, "wbtMethod", "NOT_INSPECTED")) {
+      warn("narr-structuralCondition-wbtReason", "The Preamble says the vessel was laden, but the ballast tanks are given as ballasted. Check the reason.")
+    }
+    if (loading === "BALLAST" && str(i, "cargoTanks") === "LOADED") {
+      warn("narr-structuralCondition-cargoTanks", "The Preamble says the vessel was in ballast, but the cargo tanks are given as not inspected because she was loaded.")
+    }
     const action = deficientItems(ctx, STRUCTURE_KEYS)
     if (isFavourable(str(i, "assessment")) && action.length) {
       warn("narr-structuralCondition-assessment", `The structural condition is favourable while ${itemNames(action)} ${action.length === 1 ? "is" : "are"} rated Deficient. Confirm the assessment.`)
@@ -315,10 +277,9 @@ export const STRUCTURAL_SECTION: SectionSpec = {
       warn("narr-structuralCondition-wbtCoating", "Ballast tank coating is GOOD while tanks are rated Deficient in the Vessel Condition Report.")
     }
     const start = ctx.startDate
-    const uwDate = str(i, "uwDate")
-    if (str(i, "uwStatus") === "PREVIOUS" && flag(i, "uwSms") && uwDate && start) {
-      const months = (Date.parse(start) - Date.parse(uwDate)) / (30.44 * 24 * 3600 * 1000)
-      if (months > 6) warn("narr-structuralCondition-uwDate", "The last underwater inspection was more than six months before this attendance; check the SMS interval.")
+    const months = monthsSinceUnderwater(i, start)
+    if (flag(i, "uwSms") && months !== null && months > 6) {
+      warn("narr-structuralCondition-uwDate", "The last underwater inspection was more than six months before this attendance; check the SMS interval.")
     }
     if ((compareIsoDates(str(i, "annualFrom"), str(i, "annualTo")) ?? 0) > 0) {
       error("narr-structuralCondition-annualTo", "The survey window cannot end before it starts.")

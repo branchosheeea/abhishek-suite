@@ -121,4 +121,56 @@
   select option:disabled {
     color: var(--muted-foreground);
   }
+  /* Where the browser supports a customisable select (Edge / Chrome 135+), the open list is drawn by the app, so
+     the hovered and selected rows use theme colours with full contrast. Elsewhere the native list above is used. */
+  @supports (appearance: base-select) {
+    select,
+    ::picker(select) {
+      appearance: base-select;
+    }
+    select {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    select::picker-icon {
+      color: var(--muted-foreground);
+      transition: rotate 0.15s;
+    }
+    select:open::picker-icon {
+      rotate: 180deg;
+    }
+    ::picker(select) {
+      margin-block: 0.25rem;
+      padding: 0.25rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background-color: var(--popover);
+      color: var(--popover-foreground);
+      box-shadow: 0 12px 32px rgb(0 0 0 / 0.28);
+    }
+    select option {
+      padding: 0.45rem 0.625rem;
+      border-radius: var(--radius-md);
+      background-color: transparent;
+      color: var(--popover-foreground);
+    }
+    select option::checkmark {
+      display: none;
+    }
+    select option:hover,
+    select option:focus-visible {
+      background-color: var(--accent);
+      color: var(--accent-foreground);
+      outline: none;
+    }
+    select option:checked {
+      background-color: var(--primary);
+      color: var(--primary-foreground);
+    }
+    select option:disabled {
+      background-color: transparent;
+      color: var(--muted-foreground);
+    }
+  }
 }

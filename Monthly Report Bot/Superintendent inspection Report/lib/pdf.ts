@@ -425,8 +425,25 @@ export async function generateReportPdf(report: Report, photos: Photo[]) {
       const remarksLabel = rating === "notInspected" ? "Reason not inspected" : "Remarks / Findings"
       rows.push([String(i + 1), label, ratingLabel(rating) || "-"])
       kinds.push({ kind: "item", rating })
-      rows.push([{ content: `${remarksLabel}: ${remarks}`, colSpan: 3, styles: { halign: remarks.includes("\n") ? ("left" as const) : ("justify" as const) } }])
-      kinds.push({ kind: "remarks", rating })
+      // One row per paragraph, so every paragraph is justified (only a block's last line stays short); inner borders
+      // are hidden, so the paragraphs read as one remarks box.
+      const paragraphs = remarks.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean)
+      paragraphs.forEach((text, p) => {
+        const first = p === 0
+        const last = p === paragraphs.length - 1
+        rows.push([
+          {
+            content: first ? `${remarksLabel}: ${text}` : text,
+            colSpan: 3,
+            styles: {
+              halign: text.includes("\n") ? ("left" as const) : ("justify" as const),
+              lineWidth: { top: first ? 0.12 : 0, bottom: last ? 0.12 : 0, left: 0.12, right: 0.12 },
+              cellPadding: { top: first ? 2.4 : 0.6, bottom: last ? 2.4 : 0.6, left: 2.6, right: 2.6 },
+            },
+          },
+        ])
+        kinds.push({ kind: "remarks", rating })
+      })
       if (needsFinding(rating)) {
         rows.push([{ content: findingLine(findingRef(areaId, i), entry?.finding ?? emptyFinding()), colSpan: 3, styles: { fontSize: 7.6, halign: "left" as const } }])
         kinds.push({ kind: "finding", rating })

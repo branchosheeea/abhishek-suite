@@ -18,7 +18,7 @@ import {
 } from "@/lib/form-schema"
 import { cn } from "@/lib/utils"
 import { Check, CircleCheck, CircleMinus, EyeOff, Info, OctagonAlert, ThumbsUp, TriangleAlert } from "lucide-react"
-import { useRef } from "react"
+import { useRef, useState } from "react"
 import { FindingFields } from "./finding-fields"
 import { FormatToolbar } from "./format-toolbar"
 
@@ -61,10 +61,13 @@ type Props = {
   /** The condition section's id (e.g. "engine"); also used for finding references such as ENG-02. */
   idPrefix: string
   onChange: (key: string, entry: ConditionEntry) => void
+  /** Items whose remarks are written by a builder on the page (key → builder name); shown read-only by default. */
+  builtRemarks?: Record<string, string>
 }
 
-export function ConditionList({ items, values, idPrefix, onChange }: Props) {
+export function ConditionList({ items, values, idPrefix, onChange, builtRemarks }: Props) {
   const remarksRefs = useRef<Record<string, HTMLTextAreaElement>>({})
+  const [handEdit, setHandEdit] = useState<Record<string, boolean>>({})
   const ratings = items.map((item) => effectiveRating(values[item.key]?.rating))
   const applicable = ratings.filter((r) => r !== "na").length
   const assessed = ratings.filter(isGraded).length
@@ -174,6 +177,27 @@ export function ConditionList({ items, values, idPrefix, onChange }: Props) {
                 })}
               </div>
 
+              {builtRemarks?.[item.key] && !handEdit[item.key] ? (
+                <div className="flex flex-col gap-2 rounded-lg border bg-muted/40 p-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                      Remarks{remarksNeeded || builtRemarks[item.key] ? <span className="text-destructive"> *</span> : null}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setHandEdit((s) => ({ ...s, [item.key]: true }))}
+                      className="text-xs font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    >
+                      Edit by hand
+                    </button>
+                  </div>
+                  {entry.remarks.trim() ? (
+                    <p className="whitespace-pre-line leading-relaxed">{entry.remarks}</p>
+                  ) : (
+                    <p className="text-muted-foreground">Not written yet. Use the {builtRemarks[item.key]} below and save the text to the report.</p>
+                  )}
+                </div>
+              ) : (
               <div>
                 <FormatToolbar value={entry.remarks} onChange={(remarks) => onChange(item.key, { ...entry, remarks })} inputRef={remarksRef} />
                 <Textarea
@@ -184,7 +208,8 @@ export function ConditionList({ items, values, idPrefix, onChange }: Props) {
                   aria-label={`${item.label} remarks${remarksNeeded ? " (mandatory)" : ""}`}
                   aria-invalid={remarksNeeded && !entry.remarks.trim() ? true : undefined}
                   value={entry.remarks}
-                  onChange={(e) => onChange(item.key, { ...entry, remarks: e.target.value })}
+                  // Typing over builder text: its short register statement no longer applies.
+                  onChange={(e) => onChange(item.key, { ...entry, remarks: e.target.value, ...(builtRemarks?.[item.key] ? { summary: undefined } : {}) })}
                   placeholder={
                     current === "notInspected"
                       ? "* Mandatory: why it could not be inspected (e.g. tanks loaded, no gas-free certificate, no access)…"
@@ -195,6 +220,7 @@ export function ConditionList({ items, values, idPrefix, onChange }: Props) {
                   className="min-h-20 resize-y rounded-t-none text-sm leading-relaxed"
                 />
               </div>
+              )}
 
               {needsFinding(current) && (
                 <FindingFields

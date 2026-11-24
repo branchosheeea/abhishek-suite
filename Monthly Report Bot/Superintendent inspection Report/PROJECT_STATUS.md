@@ -25,6 +25,26 @@ This is an offline-first web app for preparing Superintendent's Detailed Inspect
 - Removed source-report page-header and form-code artifacts from exported narrative text only; the locally stored report content is unchanged.
 - Added the Executive Summary – Preamble builder (16 Nov 2026). It replaces the free-text preamble box with structured selections, a deterministic generator, a live preview, validation and Draft / Under Review / Final status. Selections are saved in `report.narratives.preamble` and the generated text in `summary.preamble`. Existing hand-written preambles are kept until the user confirms a replacement. `npm run typecheck` and `npm test` were added (65 tests). Details are in README.md.
 - Added controlled builders for the other six Executive Summary fields (17 Nov 2026): Overall, Structural and Operational Condition, Performance, Significant Problems, and Projects and Upgrades. They are based on a review of 27 past reports. A generic section engine (`lib/narrative/section.ts`) and one definition per section are used. The builders take facts from the report's own condition ratings and critical-equipment tests, and cross-check the summary against them. The placeholder check now also catches "XXXX". There are 93 unit tests in total.
+- Added the Hull page remarks builder (23 Nov 2026). It follows the same controlled-narrative engine as the Executive Summary, based on how past reports describe the hull. The text is saved as the Hull item's remarks, and the findings register receives a short defect statement. A new page starts from the Structural Condition summary's underwater and hull selections, using shared wording. The text is cross-checked against the rating, the Load Line Convention (markings), Class reporting of damage, the six-monthly underwater interval and the Structural summary. The engine now supports other save targets and starting selections, so further condition items can get builders.
+- The vessel's condition is now stated once and carried through the whole report (23 Nov 2026). Laden or ballast, and at sea, in port or in dry-dock, are taken from the Preamble. The Preamble now asks laden/ballast for every status that does not already imply it. The Hull builder no longer asks for it. The Hull, Structural and Operational builders show it, and warn when a selection contradicts it.
+- Hull coating (23 Nov 2026):
+  - The date of the last complete hull painting is now recorded and stated with the coating's age.
+  - Coating repairs always involve the paint maker; the ship's-staff touch-up options were removed.
+  - Repair actions are multi-select, and the extent of breakdown is recorded.
+  - New checks: coating older than five years; breakdown on a recent coating (warranty).
+- Dropdowns use the theme's colours for the open list in Edge / Chrome 135+, so hovered and selected options stay readable in the dark theme.
+- Added the Main Deck (Weather deck) remarks builder (23 Nov 2026), based on the Weather Deck sections of past reports. It adds the items those reports omit but PSC / SIRE 2.0 / TMSA inspectors check: pollution prevention on deck and cargo line bonding. PV valves, the PV breaker, deck seal and mast riser are reported here. Ship's-staff painting is accepted on deck.
+- Main Deck builder extended after a Technical Director-level review (23 Nov 2026):
+  - previous findings follow-up;
+  - paint system and crew training discussion;
+  - surface preparation and DFT;
+  - "verified by" on key items;
+  - flame screens, deck seal alarm and tank openings;
+  - Ex electrical equipment and weathertight closures;
+  - temporary repairs register with Class status.
+
+  Defects in these suggest a Deficient rating.
+- Main Deck (24 Nov 2026): explicit deck coating condition on the IACS scale, the type of breakdown and the coating's age (the helpers are now shared with the Hull page).
 
 ## Running locally
 

@@ -12,6 +12,7 @@ import {
   NAVIGATION_KEYS,
   SAFETY_KEYS,
   deficientItems,
+  vesselConditionFacts,
   assessment,
   flag,
   isFavourable,
@@ -365,7 +366,20 @@ export const OPERATIONAL_SECTION: SectionSpec = {
     ]
   },
 
+  facts: vesselConditionFacts,
+
   validate(i, ctx, { warn }) {
+    const { loading, situation } = ctx.vesselCondition
+    const cargoMethod = str(i, "cargo")
+    if (cargoMethod === "UNDERWAY" && (situation === "PORT" || situation === "DRY_DOCK")) {
+      warn("narr-operationalCondition-cargo", `“At sea” is selected for the cargo machinery, but the Preamble says the vessel was ${situation === "PORT" ? "in port" : "in dry-dock"}.`)
+    }
+    if (cargoMethod === "OBSERVED" && situation === "SEA") {
+      warn("narr-operationalCondition-cargo", "Cargo machinery is recorded as observed during cargo operations, but the Preamble says the vessel was at sea.")
+    }
+    if (cargoMethod === "NO_CARGO" && loading === "LADEN") {
+      warn("narr-operationalCondition-cargo", "“No cargo on board” is selected, but the Preamble says the vessel was laden.")
+    }
     const keys = [...MACHINERY_KEYS, ...NAVIGATION_KEYS, ...CARGO_KEYS, ...SAFETY_KEYS]
     const action = deficientItems(ctx, keys)
     if (isFavourable(str(i, "assessment")) && action.length) {

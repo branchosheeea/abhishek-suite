@@ -73,7 +73,8 @@ lib/
   modules.ts           # Registry of web workspaces
   narrative/           # Controlled-narrative engine (no React): text/date helpers, preamble options,
                        #   model, generator and validation; section.ts (generic engine), context.ts
-                       #   (facts from the report), sections/ (the six other summary fields)
+                       #   (facts from the report), sections/ (the six other summary fields, hull.ts for
+                       #   the Hull remarks, underwater.ts shared by Hull and Structural)
   vessels.ts           # Fleet list (mirrors report_catalog.VESSELS in the desktop suite)
   form-schema.ts       # SIR form data model and section definitions
   local-db.ts          # Local IndexedDB access
@@ -245,6 +246,98 @@ The engine is generic (`lib/narrative/section.ts`). A section is a data definiti
 1. Write a `SectionSpec` in `lib/narrative/sections/`.
 2. Add it to `SUMMARY_SECTIONS`, or place it where it belongs in the editor.
 3. Add tests in `tests/narrative/`.
+
+## Hull page – remarks builder
+
+The Hull item's remarks are built the same way as the Executive Summary: from structured selections, with a live preview, validation and Draft / Under Review / Final status. The builder covers:
+- how the hull was examined: launch boat, berth (which side alongside), while boarding, from the deck, or in dry-dock, and the loading condition;
+- the shell plating above the waterline: no damage, a minor indentation within Class limits, or contact damage, with its location and the action taken;
+- the markings: draught marks, load line mark, name, port of registry and IMO number;
+- **the coating:**
+  - when the hull was last completely painted (full blast and recoat), and the coating's age at this attendance, as the reference for paint performance;
+  - topside and boot-top condition, and the extent of any breakdown;
+  - the repair, always with the paint maker's assessment (there is no ship's-staff touch-up option);
+  - the antifouling system and any later antifouling application;
+  - marine growth;
+- the underwater inspection and propeller polishing, including the diving company and the propeller slime coverage;
+- hull performance.
+
+How it fits with the rest of the report:
+- **Rating:** chosen separately with the rating buttons.
+- **Saved text:** goes into the Hull remarks, shown read-only, with "Edit by hand" kept as an escape hatch.
+- **Findings register:** for a Degraded or Deficient hull, it gets only the short defect statement, not the whole description.
+- **Mandatory:** the Hull remarks are required, as the Executive Summary texts are.
+
+**Starting point.** A new Hull page starts from the Structural Condition summary's underwater and hull selections. The underwater options and wording are shared (`lib/narrative/sections/underwater.ts`), so the two never describe the same inspection differently.
+
+**Cross-checks (warnings, not blocks):**
+- the text against the rating, e.g. "Satisfactory" with minor defects suggests Acceptable;
+- illegible draught or load line marks against the Load Line Convention, suggesting Deficient;
+- contact damage not reported to Class;
+- an underwater inspection older than six months;
+- a coating older than five years;
+- breakdown on a coating less than two years old (possible paint-maker warranty claim);
+- coating damage without the paint maker's assessment (an error);
+- differences from the Structural Condition summary.
+
+## Main Deck page – remarks builder
+
+The Weather deck remarks are built the same way as the Hull remarks. The builder covers:
+- the areas inspected;
+- the deck plating, and the rust on deck;
+- **the deck coating condition** on the IACS scale (GOOD / FAIR / POOR):
+  - the type of breakdown (edges and welds, under supports, blistering, flaking, chalking, mechanical damage, anti-skid);
+  - when the deck was last fully coated, with the coating's age;
+  - checks against the rust extent, the rating and the repair plan, and early breakdown flagged as a possible warranty claim;
+- **the painting programme:**
+  - progress and remaining areas;
+  - any delay and the planned completion (checked against laden / ballast from the Preamble);
+  - paint stock and maintenance equipment;
+  - crew painting is normal maintenance; the paint maker is involved for a coating failure;
+- pipelines and supports;
+- **safety and pollution prevention on deck:** walkways, cargo line bonding straps, scupper plugs, save-alls and drip trays, deck spill equipment;
+- **venting and inert gas:** PV valves, PV breaker level, deck seal, mast riser, and the last PV valve maintenance;
+- hydraulic lines and rust weeping;
+- the accommodation exterior, engine casing, funnel and EGCS tower.
+
+Deck rust, casing and EGCS start from the Structural Condition summary.
+
+**Additions from the Technical Director review (23 Nov 2026):**
+- **Previous findings:** the status of the previous inspection's deck findings (all closed / open / overdue, with revised due dates) opens the section.
+- **Painting:**
+  - the deck paint in use (maker and product);
+  - progress by sections completed;
+  - surface preparation standard and DFT readings against the paint maker's specification;
+  - the painting scope discussed with the Chief Officer, Bosun and deck crew, with the outcome on crew training;
+  - technical data sheets on board.
+- **"Verified by"** (sighted / function-tested / PMS records) on PV valves, the deck seal and bonding straps.
+- **Venting:**
+  - flame screens and high-velocity vents;
+  - the deck seal water level and low-level alarm;
+  - tank openings secured with no vapour leakage.
+- **Electrical and weathertight:**
+  - Ex-rated electrical equipment in hazardous areas;
+  - weathertight doors and hatches.
+- **A temporary repairs register:** doublers, cement boxes and pipe clamps, each with its Class status and permanent repair.
+
+**Cross-checks (warnings, not blocks):**
+- the text against the rating;
+- missing bonding straps, missing scupper plugs or a passing PV valve, suggesting Deficient;
+- PV valve maintenance older than six months;
+- differences from the Structural summary.
+
+**Vessel condition is stated once.** Whether the vessel was laden or in ballast, and at sea, in port or in dry-dock, comes from the Executive Summary – Preamble: the vessel status, the "Laden or ballast condition" answer, or the operating conditions. Every builder uses it without asking again.
+- **The Hull text** writes "with the vessel in laden condition" from it, and asks only when the Preamble is silent.
+- **Builders that depend on it** show a "Vessel condition (from the Preamble)" line.
+- **Contradictions are flagged**, for example:
+  - ballast tanks "ballasted" while laden;
+  - cargo tanks "loaded" while in ballast;
+  - cargo machinery "at sea" while in port;
+  - "no cargo" while laden;
+  - examination from the berth while at sea;
+  - a hull not examined in dock during dry-docking.
+
+**More items.** Further condition items can get a builder by adding a section and listing it in `CONDITION_ITEM_SECTIONS` (`lib/narrative/sections/index.ts`).
 
 ## Condition ratings, findings and the Condition & Assurance Overview
 

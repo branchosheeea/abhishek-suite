@@ -252,6 +252,7 @@ export function AttendanceDetailsForm({ inputs, facts, set, setDetail, messages,
           <SelectField
             field="loadingCondition"
             label="Laden or ballast condition"
+            hint="Stated once here and used throughout the report (Hull, Structural, Operational)."
             value={inputs.loadingCondition}
             placeholder="Not stated"
             options={LOADING_CONDITIONS}

@@ -2,6 +2,7 @@
 // The Preamble predates this engine and keeps its own model; every other Executive Summary section uses this one.
 // Pure TypeScript: no React, no browser APIs.
 
+import type { Report } from "../form-schema"
 import { isValidIsoDate } from "./dates"
 import type { ReportContext } from "./context"
 import { hasGap, placeholderProblems, removeGaps, tidy, toSegments, wordCount, type Segment } from "./text"
@@ -60,8 +61,18 @@ export type GeneratedNarrative = {
 
 export type SectionSpec = {
   id: Exclude<NarrativeSectionId, "preamble">
-  /** Key of the plain-text field in `report.summary` that receives the generated text. */
+  /** Key of the plain-text field in `report.summary` that receives the generated text (also used in element ids). */
   summaryKey: string
+  /** Where the saved text lives when it is not `report.summary[summaryKey]` (e.g. a condition item's remarks). */
+  target?: { read: (report: Report) => string; write: (report: Report, text: string, summary?: string) => Partial<Report> }
+  /** Facts this section takes from elsewhere in the report (shown above the form, never asked again). */
+  facts?: (ctx: ReportContext) => [label: string, value: string][]
+  /** Short statement of the defects selected (for the findings register), saved with the text; "" when none. */
+  summary?: (inputs: SectionInputs, ctx: ReportContext) => string
+  /** Heading of the builder; defaults to "Executive Summary – <title>". */
+  heading?: string
+  /** Starting selections for a report that has none saved yet, taken from elsewhere in the report. */
+  seed?: (report: Report) => Record<string, unknown>
   title: string
   tab: string
   description: string
@@ -138,8 +149,8 @@ export function normaliseSectionInputs(spec: SectionSpec, raw: unknown): Section
   return inputs
 }
 
-export function normaliseSectionState(spec: SectionSpec, raw: unknown): SectionState {
-  const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {}
+export function normaliseSectionState(spec: SectionSpec, raw: unknown, seed?: Record<string, unknown>): SectionState {
+  const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : seed ? { inputs: seed } : {}
   const status = r.status === "UNDER_REVIEW" || r.status === "FINAL" ? r.status : "DRAFT"
   return {
     status,

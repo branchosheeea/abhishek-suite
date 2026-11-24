@@ -160,7 +160,7 @@ function attendanceSentence(inputs: PreambleInputs, facts: PreambleFacts) {
       const where = withDestination ? ` to ${withDestination}` : route ? ` from ${route}` : ""
       return `${status.clause}${where}${suffix}`
     }
-    const loading = findOption(LOADING_CONDITIONS, inputs.loadingCondition)
+    const loading = "loading" in status && status.loading ? findOption(LOADING_CONDITIONS, inputs.loadingCondition) : undefined
     return loading ? `${status.clause} ${loading.phrase}` : status.clause
   }
 

@@ -10,6 +10,8 @@ export const NARRATIVE_SECTIONS = [
   { id: "performance", title: "Performance" },
   { id: "significantProblems", title: "Significant Problems" },
   { id: "projectsUpgrades", title: "Projects and Upgrades" },
+  { id: "hullCondition", title: "Hull" },
+  { id: "mainDeckCondition", title: "Main Deck" },
   { id: "vesselCondition", title: "Vessel Condition Report" },
   { id: "machineryCondition", title: "Machinery Condition" },
   { id: "pmsDefectsCompliance", title: "PMS, Defects and Compliance" },

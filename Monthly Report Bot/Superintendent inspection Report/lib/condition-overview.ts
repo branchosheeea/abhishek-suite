@@ -134,7 +134,8 @@ export function findingsRegister(report: Report): RegisterEntry[] {
         item: item.label,
         rating: entry.rating,
         source: "condition",
-        description: entry.remarks?.trim() ?? "",
+        // A remarks builder saves a short defect statement; otherwise the remarks are the finding.
+        description: entry.summary?.trim() || entry.remarks?.trim() || "",
         finding: entry.finding ?? emptyFinding(SAFETY_CRITICAL_ITEMS.includes(item.key)),
       })
     }

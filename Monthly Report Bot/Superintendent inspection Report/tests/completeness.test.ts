@@ -36,6 +36,8 @@ function completeReport(): Report {
   for (const section of CONDITION_SECTIONS) {
     for (const item of section.items) (section.source === "deck" ? r.deck : r.engine)[item.key] = { rating: "satisfactory", remarks: "" }
   }
+  r.deck.hull.remarks = "The hull above the waterline was examined from a launch boat around the vessel."
+  r.deck.weatherDeck.remarks = "The weather deck was inspected, covering the main deck."
   r.worklist = { issued: true, followUp: true }
   r.signoff.superintendentSignature = SIG
   return r
