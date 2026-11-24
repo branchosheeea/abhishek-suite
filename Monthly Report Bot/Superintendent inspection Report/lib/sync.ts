@@ -1,17 +1,44 @@
 "use client"
 
+// Sync between this browser (IndexedDB, the working copy) and the cloud (MongoDB via /api/reports).
+//
+// Conflicts. Each save tells the server which cloud version this device's copy is based on (lib/report-write.ts). If
+// another device or tab saved in between, the server answers 409. The device then keeps its own copy, marks the report
+// as in conflict and stops sending or fetching it, so neither copy can overwrite the other. The person chooses what to
+// keep (resolveSyncConflict): this device's version, the cloud version, or both (this device's version is saved as a
+// separate report). Before this, a 409 was treated as synced and the next fetch replaced the local changes.
+//
+// The engine takes its storage and network functions as arguments (createSyncEngine), so the rules can be tested in
+// Node; the app uses the browser ones below.
+
 import { apiFetch } from "./api"
 import type { Photo, Report } from "./form-schema"
-import {
-  deletePhotoLocal,
-  getPendingReportDeletes,
-  getReport,
-  listPhotos,
-  listReports,
-  putPhoto,
-  putReport,
-  setPendingReportDeletes,
-} from "./local-db"
+import * as local from "./local-db"
+
+export type SyncConflict = local.SyncConflict
+export type SyncState = local.SyncState
+/** synced: the report is in the cloud · conflict: changed elsewhere, waiting for the person · nothing: nothing to do. */
+export type PushResult = "synced" | "conflict" | "nothing"
+/** local: send this device's version · cloud: take the cloud version · both: keep this device's version as a new report. */
+export type ConflictChoice = "local" | "cloud" | "both"
+export type ResolveOutcome = { result: PushResult; copyId?: string }
+
+export type SyncDeps = {
+  fetch: (input: string, init?: RequestInit) => Promise<Response>
+  getReport: (id: string) => Promise<Report | undefined>
+  putReport: (report: Report) => Promise<unknown>
+  listReports: () => Promise<Report[]>
+  listPhotos: (reportId: string) => Promise<Photo[]>
+  putPhoto: (photo: Photo) => Promise<unknown>
+  deletePhotoLocal: (id: string) => Promise<unknown>
+  getPendingReportDeletes: () => string[]
+  setPendingReportDeletes: (ids: string[]) => void
+  getSyncState: (id: string) => SyncState
+  setSyncState: (id: string, state: SyncState | null) => void
+  newId: () => string
+  now: () => number
+  online: () => boolean
+}
 
 export function isReportDirty(report: Report) {
   return !report.syncedAt || report.updatedAt > report.syncedAt
@@ -21,107 +48,190 @@ export function isPhotoDirty(photo: Photo) {
   return !photo.syncedAt || photo.updatedAt > photo.syncedAt
 }
 
-async function pushReport(id: string) {
-  const report = await getReport(id)
-  if (!report) return
+const JSON_HEADERS = { "Content-Type": "application/json" }
 
-  for (const photoId of report.deletedPhotoIds ?? []) {
-    const res = await apiFetch(`/api/reports/${id}/photos/${photoId}`, { method: "DELETE" })
-    if (!res.ok) throw new Error("Photo delete failed")
-  }
+export function createSyncEngine(d: SyncDeps) {
+  /** The cloud version this device's copy is based on. */
+  const baseOf = (report: Report) => d.getSyncState(report.id).base ?? report.syncedAt
 
-  if (isReportDirty(report)) {
-    const { deletedPhotoIds: _omit, syncedAt: _s, ...payload } = report
-    const res = await apiFetch(`/api/reports/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    })
-    if (!res.ok && res.status !== 409) throw new Error("Report sync failed")
-  }
+  async function pushReport(id: string): Promise<PushResult> {
+    const report = await d.getReport(id)
+    if (!report) return "nothing"
+    const state = d.getSyncState(id)
+    // Waiting for the person to choose: sending it would replace the other version, or be refused again.
+    if (state.conflict) return "conflict"
 
-  for (const photo of await listPhotos(id)) {
-    if (!isPhotoDirty(photo)) continue
-    const res = await apiFetch(`/api/reports/${id}/photos/${photo.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(photo),
-    })
-    if (!res.ok) throw new Error("Photo sync failed")
-    const latest = (await listPhotos(id)).find((p) => p.id === photo.id)
-    if (latest && latest.updatedAt === photo.updatedAt) await putPhoto({ ...latest, syncedAt: photo.updatedAt })
-  }
-
-  const latest = await getReport(id)
-  if (latest) {
-    const remainingDeletes = (latest.deletedPhotoIds ?? []).filter((p) => !report.deletedPhotoIds?.includes(p))
-    await putReport({
-      ...latest,
-      deletedPhotoIds: remainingDeletes,
-      syncedAt: latest.updatedAt === report.updatedAt ? report.updatedAt : latest.syncedAt,
-    })
-  }
-}
-
-type RemoteSummary = { id: string; updatedAt: number }
-
-async function pullReports() {
-  const res = await apiFetch("/api/reports", { cache: "no-store" })
-  if (!res.ok) throw new Error("Could not fetch reports")
-  const { reports: remote } = (await res.json()) as { reports: RemoteSummary[] }
-  const local = new Map((await listReports()).map((r) => [r.id, r]))
-  const pendingDeletes = new Set(getPendingReportDeletes())
-
-  for (const summary of remote) {
-    if (pendingDeletes.has(summary.id)) continue
-    const existing = local.get(summary.id)
-    if (existing && (existing.updatedAt >= summary.updatedAt || isReportDirty(existing))) continue
-
-    const detail = await apiFetch(`/api/reports/${summary.id}`, { cache: "no-store" })
-    if (!detail.ok) continue
-    const { report, photos } = (await detail.json()) as { report: Report; photos: Photo[] }
-    await putReport({ ...report, deletedPhotoIds: [], syncedAt: report.updatedAt })
-
-    const remotePhotoIds = new Set(photos.map((p) => p.id))
-    for (const old of await listPhotos(summary.id)) {
-      if (!remotePhotoIds.has(old.id) && !isPhotoDirty(old)) await deletePhotoLocal(old.id)
-    }
-    for (const photo of photos) await putPhoto({ ...photo, syncedAt: photo.updatedAt })
-  }
-}
-
-async function flushReportDeletes() {
-  const pending = getPendingReportDeletes()
-  const remaining: string[] = []
-  for (const id of pending) {
-    const res = await apiFetch(`/api/reports/${id}`, { method: "DELETE" }).catch(() => null)
-    if (!res?.ok) remaining.push(id)
-  }
-  setPendingReportDeletes(remaining)
-}
-
-let running: Promise<void> | null = null
-
-export function syncAll(): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) return Promise.resolve()
-  running ??= (async () => {
-    try {
-      await flushReportDeletes()
-      for (const report of await listReports()) {
-        const photos = await listPhotos(report.id)
-        if (isReportDirty(report) || report.deletedPhotoIds?.length || photos.some(isPhotoDirty)) {
-          await pushReport(report.id)
-        }
+    let pushed = false
+    if (isReportDirty(report)) {
+      const { deletedPhotoIds: _omit, syncedAt: _s, ...payload } = report
+      const res = await d.fetch(`/api/reports/${id}`, {
+        method: "PUT",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ ...payload, baseUpdatedAt: baseOf(report) }),
+      })
+      if (res.status === 409) {
+        const body = (await res.json().catch(() => ({}))) as { serverUpdatedAt?: unknown }
+        d.setSyncState(id, { ...state, conflict: { serverUpdatedAt: Number(body.serverUpdatedAt) || 0, detectedAt: d.now() } })
+        return "conflict"
       }
-      await pullReports()
-    } finally {
-      running = null
+      if (!res.ok) throw new Error("Report sync failed")
+      // The cloud now holds this version: later saves are based on it, even if the person kept typing meanwhile.
+      d.setSyncState(id, { base: report.updatedAt })
+      pushed = true
     }
-  })()
-  return running
+
+    for (const photoId of report.deletedPhotoIds ?? []) {
+      const res = await d.fetch(`/api/reports/${id}/photos/${photoId}`, { method: "DELETE" })
+      if (!res.ok) throw new Error("Photo delete failed")
+    }
+
+    for (const photo of await d.listPhotos(id)) {
+      if (!isPhotoDirty(photo)) continue
+      const res = await d.fetch(`/api/reports/${id}/photos/${photo.id}`, { method: "PUT", headers: JSON_HEADERS, body: JSON.stringify(photo) })
+      if (!res.ok) throw new Error("Photo sync failed")
+      const latest = (await d.listPhotos(id)).find((p) => p.id === photo.id)
+      if (latest && latest.updatedAt === photo.updatedAt) await d.putPhoto({ ...latest, syncedAt: photo.updatedAt })
+    }
+
+    const latest = await d.getReport(id)
+    if (latest) {
+      const remainingDeletes = (latest.deletedPhotoIds ?? []).filter((p) => !report.deletedPhotoIds?.includes(p))
+      // Edits made while this was sending keep the copy "not yet synced" (updatedAt > syncedAt).
+      await d.putReport({ ...latest, deletedPhotoIds: remainingDeletes, syncedAt: pushed ? report.updatedAt : latest.syncedAt })
+    }
+    return "synced"
+  }
+
+  /** Replace this device's copy with the cloud copy. Photos added here and not yet sent are kept unless told otherwise. */
+  async function applyCloudCopy(report: Report, photos: Photo[], keepUnsentPhotos: boolean) {
+    await d.putReport({ ...report, deletedPhotoIds: [], syncedAt: report.updatedAt })
+    const remotePhotoIds = new Set(photos.map((p) => p.id))
+    for (const old of await d.listPhotos(report.id)) {
+      if (!remotePhotoIds.has(old.id) && !(keepUnsentPhotos && isPhotoDirty(old))) await d.deletePhotoLocal(old.id)
+    }
+    for (const photo of photos) await d.putPhoto({ ...photo, syncedAt: photo.updatedAt })
+    d.setSyncState(report.id, { base: report.updatedAt })
+  }
+
+  async function fetchCloudCopy(id: string): Promise<{ report: Report; photos: Photo[] } | null> {
+    const res = await d.fetch(`/api/reports/${id}`, { cache: "no-store" })
+    if (!res.ok) return null
+    return (await res.json()) as { report: Report; photos: Photo[] }
+  }
+
+  async function pullReports() {
+    const res = await d.fetch("/api/reports", { cache: "no-store" })
+    if (!res.ok) throw new Error("Could not fetch reports")
+    const { reports: remote } = (await res.json()) as { reports: { id: string; updatedAt: number }[] }
+    const localReports = new Map((await d.listReports()).map((r) => [r.id, r]))
+    const pendingDeletes = new Set(d.getPendingReportDeletes())
+
+    for (const summary of remote) {
+      if (pendingDeletes.has(summary.id)) continue
+      // Never replace a copy in conflict: the person has not chosen yet.
+      if (d.getSyncState(summary.id).conflict) continue
+      const existing = localReports.get(summary.id)
+      if (existing && (existing.updatedAt >= summary.updatedAt || isReportDirty(existing))) continue
+      const cloud = await fetchCloudCopy(summary.id)
+      if (cloud) await applyCloudCopy(cloud.report, cloud.photos, true)
+    }
+  }
+
+  async function flushReportDeletes() {
+    const remaining: string[] = []
+    for (const id of d.getPendingReportDeletes()) {
+      const res = await d.fetch(`/api/reports/${id}`, { method: "DELETE" }).catch(() => null)
+      if (!res?.ok) remaining.push(id)
+    }
+    d.setPendingReportDeletes(remaining)
+  }
+
+  let running: Promise<void> | null = null
+
+  function syncAll(): Promise<void> {
+    if (!d.online()) return Promise.resolve()
+    running ??= (async () => {
+      try {
+        await flushReportDeletes()
+        for (const report of await d.listReports()) {
+          const photos = await d.listPhotos(report.id)
+          if (isReportDirty(report) || report.deletedPhotoIds?.length || photos.some(isPhotoDirty)) {
+            await pushReport(report.id)
+          }
+        }
+        await pullReports()
+      } finally {
+        running = null
+      }
+    })()
+    return running
+  }
+
+  function syncReport(id: string): Promise<PushResult> {
+    if (!d.online()) return Promise.resolve("nothing")
+    return pushReport(id)
+  }
+
+  /**
+   * Settle a conflict with the person's choice.
+   * local: this device's version replaces the cloud copy (refused again if the cloud changed once more meanwhile).
+   * cloud: the cloud copy replaces this device's; photos added here and not yet sent are kept and sent.
+   * both:  this device's version, with its photos, is saved as a new report; this one takes the cloud copy.
+   */
+  async function resolveSyncConflict(id: string, choice: ConflictChoice): Promise<ResolveOutcome> {
+    const state = d.getSyncState(id)
+    const conflict = state.conflict
+    if (!conflict) return { result: "nothing" }
+    const report = await d.getReport(id)
+    if (!report) {
+      d.setSyncState(id, null)
+      return { result: "nothing" }
+    }
+
+    if (choice === "local") {
+      d.setSyncState(id, { base: conflict.serverUpdatedAt })
+      await d.putReport({ ...report, updatedAt: Math.max(d.now(), conflict.serverUpdatedAt + 1, report.updatedAt + 1) })
+      return { result: await pushReport(id) }
+    }
+
+    const cloud = await fetchCloudCopy(id)
+    if (!cloud) throw new Error("The cloud copy could not be loaded.")
+
+    let copyId: string | undefined
+    if (choice === "both") {
+      copyId = d.newId()
+      const at = d.now()
+      const devicePhotos = await d.listPhotos(id)
+      await d.putReport({ ...report, id: copyId, createdAt: at, updatedAt: at, syncedAt: undefined, deletedPhotoIds: [] })
+      for (const photo of devicePhotos) {
+        await d.putPhoto({ ...photo, id: d.newId(), reportId: copyId, updatedAt: at, syncedAt: undefined })
+      }
+    }
+    // For "both" every photo of this device's version is in the copy, so this report takes exactly the cloud's photos.
+    await applyCloudCopy(cloud.report, cloud.photos, choice === "cloud")
+    return copyId ? { result: "synced", copyId } : { result: "synced" }
+  }
+
+  return { pushReport, pullReports, syncAll, syncReport, resolveSyncConflict }
 }
 
-export function syncReport(id: string): Promise<void> {
-  if (typeof navigator !== "undefined" && !navigator.onLine) return Promise.resolve()
-  return pushReport(id)
-}
+const browserEngine = createSyncEngine({
+  fetch: apiFetch,
+  getReport: local.getReport,
+  putReport: local.putReport,
+  listReports: local.listReports,
+  listPhotos: local.listPhotos,
+  putPhoto: local.putPhoto,
+  deletePhotoLocal: local.deletePhotoLocal,
+  getPendingReportDeletes: local.getPendingReportDeletes,
+  setPendingReportDeletes: local.setPendingReportDeletes,
+  getSyncState: local.getSyncState,
+  setSyncState: local.setSyncState,
+  newId: local.newId,
+  now: () => Date.now(),
+  online: () => typeof navigator === "undefined" || navigator.onLine,
+})
+
+export const syncAll = browserEngine.syncAll
+export const syncReport = browserEngine.syncReport
+export const resolveSyncConflict = browserEngine.resolveSyncConflict

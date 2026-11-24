@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import useSWR from "swr"
 import { createEmptyReport, type Photo, type Report } from "@/lib/form-schema"
-import { deletePhotoLocal, getReport, listPhotos, newId, putPhoto, putReport } from "@/lib/local-db"
+import { deletePhotoLocal, getReport, getSyncState, listPhotos, newId, putPhoto, putReport, setSyncState } from "@/lib/local-db"
 import { apiFetch } from "@/lib/api"
-import { syncReport } from "@/lib/sync"
+import { resolveSyncConflict, syncReport, type ConflictChoice, type ResolveOutcome, type SyncConflict } from "@/lib/sync"
 
-export type SaveState = "idle" | "saving" | "saved" | "synced" | "sync-error"
+/** conflict: the cloud copy was changed elsewhere; this device's copy is kept and not sent until the person chooses. */
+export type SaveState = "idle" | "saving" | "saved" | "synced" | "sync-error" | "conflict"
 
 // A report that is not on this device yet (opened from a link or bookmark) is fetched from the cloud first.
 // Creating an empty draft instead would carry a newer timestamp and overwrite the cloud copy on the next sync.
@@ -22,6 +23,7 @@ async function fetchFromCloud(id: string): Promise<Report | null | "locked"> {
     const local: Report = { ...createEmptyReport(id), ...report, deletedPhotoIds: [], syncedAt: report.updatedAt }
     await putReport(local)
     for (const photo of photos) await putPhoto({ ...photo, syncedAt: photo.updatedAt })
+    setSyncState(id, { base: report.updatedAt })
     return local
   } catch {
     return null
@@ -48,6 +50,7 @@ export function useReportEditor(id: string) {
   const [report, setReport] = useState<Report | null>(null)
   const [photos, setPhotos] = useState<Photo[]>([])
   const [saveState, setSaveState] = useState<SaveState>("idle")
+  const [conflict, setConflict] = useState<SyncConflict | null>(null)
   const saveTimer = useRef<number | undefined>(undefined)
   const syncTimer = useRef<number | undefined>(undefined)
   const latest = useRef<Report | null>(null)
@@ -57,19 +60,22 @@ export function useReportEditor(id: string) {
       latest.current = data.report
       setReport(data.report)
       setPhotos(data.photos)
+      setConflict(getSyncState(id).conflict ?? null)
     }
-  }, [data])
+  }, [data, id])
 
   const runSync = useCallback(async () => {
     if (!navigator.onLine) return
     try {
-      await syncReport(id)
+      const result = await syncReport(id)
       const fresh = await getReport(id)
       if (fresh && latest.current) {
         latest.current = { ...latest.current, syncedAt: fresh.syncedAt, deletedPhotoIds: fresh.deletedPhotoIds }
       }
       setPhotos(await listPhotos(id))
-      setSaveState("synced")
+      const open = getSyncState(id).conflict ?? null
+      setConflict(open)
+      setSaveState(result === "conflict" || open ? "conflict" : "synced")
     } catch {
       setSaveState("sync-error")
     }
@@ -167,6 +173,33 @@ export function useReportEditor(id: string) {
     [photos, update],
   )
 
+  /** Settle a sync conflict (see lib/sync.ts), then show the report as it now stands on this device. */
+  const resolveConflict = useCallback(
+    async (choice: ConflictChoice): Promise<ResolveOutcome> => {
+      window.clearTimeout(saveTimer.current)
+      window.clearTimeout(syncTimer.current)
+      if (latest.current) await putReport(latest.current)
+      setSaveState("saving")
+      try {
+        return await resolveSyncConflict(id, choice)
+      } catch (error) {
+        setSaveState("sync-error")
+        throw error
+      } finally {
+        const fresh = await getReport(id)
+        if (fresh) {
+          latest.current = fresh
+          setReport(fresh)
+        }
+        setPhotos(await listPhotos(id))
+        const open = getSyncState(id).conflict ?? null
+        setConflict(open)
+        setSaveState((state) => (open ? "conflict" : state === "sync-error" ? state : "synced"))
+      }
+    },
+    [id],
+  )
+
   useEffect(() => {
     const flush = () => {
       if (latest.current) void putReport(latest.current)
@@ -186,5 +219,17 @@ export function useReportEditor(id: string) {
     return () => window.removeEventListener("online", onOnline)
   }, [scheduleSync])
 
-  return { report, photos, isLoading: isLoading || !report, saveState, update, saveNow, addPhoto, updatePhoto, removePhoto }
+  return {
+    report,
+    photos,
+    isLoading: isLoading || !report,
+    saveState,
+    conflict,
+    resolveConflict,
+    update,
+    saveNow,
+    addPhoto,
+    updatePhoto,
+    removePhoto,
+  }
 }

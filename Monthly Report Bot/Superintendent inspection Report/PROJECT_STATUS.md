@@ -45,6 +45,11 @@ This is an offline-first web app for preparing Superintendent's Detailed Inspect
 
   Defects in these suggest a Deficient rating.
 - Main Deck (24 Nov 2026): explicit deck coating condition on the IACS scale, the type of breakdown and the coating's age (the helpers are now shared with the Hull page).
+- Sync conflicts fixed (24 Nov 2026, audit item P0-1).
+  - **Before:** when the cloud refused a save as out of date (409), the app marked the report as synced, and the next fetch replaced this device's changes.
+  - **Detection:** each save now carries the cloud version it is based on. The server writes only that version.
+  - **On a conflict:** the device keeps its copy, stops syncing that report, and asks whether to keep both, use this device's version or use the cloud version.
+  - **Tests:** `tests/sync-conflict.test.ts`. Details are in README.md under "When the same report is changed in two places".
 
 ## Running locally
 

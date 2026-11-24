@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { getDb, ID_PATTERN } from "@/lib/mongodb"
+import { decideReportWrite, readBaseUpdatedAt } from "@/lib/report-write"
 import { route } from "@/lib/server/http"
 
 type Ctx = { params: Promise<{ id: string }> }
@@ -67,12 +68,37 @@ export const PUT = route<Ctx>({ mutating: true, limit: ["write", 600] }, async (
   }
 
   const db = await getDb()
-  const existing = await db.collection("reports").findOne({ id }, { projection: { updatedAt: 1 } })
-  if (existing && Number(existing.updatedAt) > updatedAt) {
-    return NextResponse.json({ status: "stale", serverUpdatedAt: existing.updatedAt }, { status: 409 })
+  const reports = db.collection("reports")
+  const conflict = (serverUpdatedAt: unknown) =>
+    NextResponse.json({ status: "stale", serverUpdatedAt: Number(serverUpdatedAt) }, { status: 409 })
+
+  const existing = await reports.findOne({ id }, { projection: { updatedAt: 1 } })
+  const decision = decideReportWrite({
+    serverUpdatedAt: existing ? Number(existing.updatedAt) : null,
+    updatedAt,
+    baseUpdatedAt: readBaseUpdatedAt(body.baseUpdatedAt),
+  })
+  if (decision === "conflict") return conflict(existing!.updatedAt)
+  if (decision === "unchanged") return NextResponse.json({ status: "ok", updatedAt })
+
+  if (decision === "insert") {
+    try {
+      await reports.insertOne(doc)
+    } catch (error) {
+      // Another save created it a moment ago: report a conflict rather than overwrite it.
+      if ((error as { code?: number }).code !== 11000) throw error
+      const now = await reports.findOne({ id }, { projection: { updatedAt: 1 } })
+      return conflict(now?.updatedAt)
+    }
+    return NextResponse.json({ status: "ok", updatedAt })
   }
 
-  await db.collection("reports").updateOne({ id }, { $set: doc }, { upsert: true })
+  // Replace only the version that was checked above: a save that slipped in between is not overwritten.
+  const result = await reports.updateOne({ id, updatedAt: existing!.updatedAt }, { $set: doc })
+  if (result.matchedCount === 0) {
+    const now = await reports.findOne({ id }, { projection: { updatedAt: 1 } })
+    return conflict(now?.updatedAt)
+  }
   return NextResponse.json({ status: "ok", updatedAt })
 })
 

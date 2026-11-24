@@ -27,6 +27,7 @@ export async function deleteReportLocal(id: string) {
   const reportPhotos = await listPhotos(id)
   await Promise.all(reportPhotos.map((p) => del(p.id, photos())))
   await del(id, reports())
+  setSyncState(id, null)
 }
 
 export async function listPhotos(reportId: string): Promise<Photo[]> {
@@ -49,4 +50,39 @@ export function getPendingReportDeletes(): string[] {
 
 export function setPendingReportDeletes(ids: string[]) {
   window.localStorage.setItem(DELETED_KEY, JSON.stringify(ids))
+}
+
+// Sync state per report, written only by the sync code (lib/sync.ts), never by the editor's autosave:
+//   base      the cloud version this device's copy is based on (the cloud's updatedAt at the last sync)
+//   conflict  the cloud copy changed elsewhere since then; this device's copy is kept and not sent until the person
+//             chooses what to keep
+// If this is ever lost (site data cleared), nothing is lost with it: the copy's own syncedAt is used as the base, and a
+// conflict is detected again on the next sync.
+const SYNC_STATE_KEY = "sir-sync-state"
+
+export type SyncConflict = { serverUpdatedAt: number; detectedAt: number }
+export type SyncState = { base?: number; conflict?: SyncConflict }
+
+function readSyncStates(): Record<string, SyncState> {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(SYNC_STATE_KEY) ?? "{}")
+    return parsed && typeof parsed === "object" ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+export function getSyncState(id: string): SyncState {
+  return readSyncStates()[id] ?? {}
+}
+
+export function setSyncState(id: string, state: SyncState | null) {
+  try {
+    const all = readSyncStates()
+    if (state && (state.base !== undefined || state.conflict)) all[id] = state
+    else delete all[id]
+    window.localStorage.setItem(SYNC_STATE_KEY, JSON.stringify(all))
+  } catch {
+    // Storage unavailable: the next sync falls back to the report's syncedAt and detects any conflict again.
+  }
 }

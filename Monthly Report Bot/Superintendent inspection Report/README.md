@@ -405,6 +405,21 @@ This app uses two storage layers:
 
 When the app is online, local changes are pushed to the server, and remote updates are pulled back into the browser.
 
+### When the same report is changed in two places
+
+A report can be edited on two devices, in two browsers or in two tabs. Neither version is ever silently overwritten.
+- **Each save says which cloud version it is based on.** The server (`lib/report-write.ts`) accepts it only if the cloud still holds that version, and writes only that version, so two saves cannot both succeed.
+- **If the cloud copy changed in between**, the server answers 409. This device keeps its own copy and shows **"This report was also changed on another device or browser tab"**. The list shows **Sync conflict**.
+- **Until the person chooses**, that report is neither sent nor fetched. Work can continue meanwhile.
+- **The person then chooses one of three:**
+  - **Keep both** saves this device's version, with its photos, as a separate report, and shows the cloud version here.
+  - **Use this device's version** replaces the cloud copy. If the cloud changed yet again, it is refused again.
+  - **Use the cloud version** discards this device's changes. Photos added on this device are kept and sent.
+- **Where the sync state is kept:** the cloud version each copy is based on, and any open conflict, are kept in the browser's localStorage (`sir-sync-state`). Only the sync code writes them; the editor's autosave never does. If they are lost, nothing is lost with them: the report's own `syncedAt` is used, and a conflict is found again on the next sync.
+- **Older versions:** before 24 Nov 2026, a refused save was treated as synced, and the next fetch replaced the local changes. A tab still running an older version sends no base version, and the server applies the previous rule to it (an older save is refused).
+
+Tests: `tests/sync-conflict.test.ts` runs two simulated devices against an in-memory cloud with the server's write rule.
+
 ## Environment variables
 
 | Variable | Required | Description |

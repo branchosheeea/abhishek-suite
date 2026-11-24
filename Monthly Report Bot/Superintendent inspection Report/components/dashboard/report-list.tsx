@@ -16,6 +16,7 @@ import { FORM_CODE, createEmptyReport, overallProgress, type Report } from "@/li
 import {
   deleteReportLocal,
   getPendingReportDeletes,
+  getSyncState,
   listPhotos,
   listReports,
   newId,
@@ -26,7 +27,7 @@ import { WEB_MODULES } from "@/lib/modules"
 import { formatDate } from "@/lib/pdf"
 import { isPhotoDirty, isReportDirty, syncAll } from "@/lib/sync"
 
-type Row = { report: Report; photoCount: number; pending: boolean }
+type Row = { report: Report; photoCount: number; pending: boolean; conflict: boolean }
 
 const MODULE = WEB_MODULES.find((m) => m.id === "inspections")!
 
@@ -39,6 +40,7 @@ async function loadRows(): Promise<Row[]> {
         report,
         photoCount: photos.length,
         pending: isReportDirty(report) || Boolean(report.deletedPhotoIds?.length) || photos.some(isPhotoDirty),
+        conflict: Boolean(getSyncState(report.id).conflict),
       }
     }),
   )
@@ -162,7 +164,7 @@ export function ReportList() {
             </div>
           ) : (
             <ul className="flex flex-col gap-3">
-              {rows.map(({ report, photoCount, pending }) => {
+              {rows.map(({ report, photoCount, pending, conflict }) => {
                 const name = report.details.vessel || report.particulars.shipName || "Untitled inspection"
                 const progress = overallProgress(report, photoCount)
                 const meta = [
@@ -186,7 +188,11 @@ export function ReportList() {
                         >
                           {name}
                         </Link>
-                        {pending ? (
+                        {conflict ? (
+                          <Badge variant="outline" className="border-destructive/60 text-destructive" title="Changed on another device or tab: open the report to choose what to keep">
+                            Sync conflict
+                          </Badge>
+                        ) : pending ? (
                           <Badge variant="outline" className="border-warning/60 text-warning-foreground dark:text-warning">
                             On device only
                           </Badge>

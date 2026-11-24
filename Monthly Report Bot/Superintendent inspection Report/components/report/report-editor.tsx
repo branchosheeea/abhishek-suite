@@ -30,6 +30,7 @@ import { ScopeSection } from "./scope-section"
 import { SectionNav } from "./section-nav"
 import { SignoffSection } from "./signoff-section"
 import { SummarySection } from "./summary-section"
+import { SyncConflictBanner } from "./sync-conflict-banner"
 import { SectionBuilder } from "./narrative/section-builder"
 import { CONDITION_ITEM_SECTIONS } from "@/lib/narrative/sections"
 import { applyLinkedChange, vesselNameMismatch } from "@/lib/linked-fields"
@@ -61,7 +62,7 @@ const DESCRIPTIONS: Partial<Record<SectionId, string>> = {
 type StringKeys = "details" | "particulars" | "summary" | "management"
 
 export function ReportEditor({ id }: { id: string }) {
-  const { report, photos, isLoading, saveState, update, saveNow, addPhoto, updatePhoto, removePhoto } = useReportEditor(id)
+  const { report, photos, isLoading, saveState, conflict, resolveConflict, update, saveNow, addPhoto, updatePhoto, removePhoto } = useReportEditor(id)
   const [active, setActive] = useState<SectionId>("details")
   const [exporting, setExporting] = useState(false)
   const topRef = useRef<HTMLDivElement>(null)
@@ -131,7 +132,7 @@ export function ReportEditor({ id }: { id: string }) {
               <span className="font-mono text-xs text-muted-foreground">
                 {report.details.reportNo ? `#${report.details.reportNo}` : `Form ${FORM_CODE}`}
               </span>
-              <SavePill state={saveState} />
+              <SavePill state={conflict ? "conflict" : saveState} />
               <StagePill stage={reportStage(report, photos.length)} outstanding={outstanding.length} onClick={() => go("signoff")} />
             </div>
           </div>
@@ -154,6 +155,7 @@ export function ReportEditor({ id }: { id: string }) {
         </aside>
 
         <main className="min-w-0 flex-1 scroll-mt-32" ref={topRef}>
+          {conflict && <SyncConflictBanner conflict={conflict} onResolve={resolveConflict} />}
           <div className="mb-6 flex flex-col gap-1">
             <p className="font-mono text-xs text-muted-foreground">
               Section {index + 1} of {SECTIONS.length}
