@@ -18,6 +18,9 @@ function getClient() {
   return globalForMongo._mongoClient
 }
 
+/** The connected client, for multi-document transactions (Vessel Master verification). */
+export const getMongoClient = () => getClient()
+
 let indexesReady: Promise<unknown> | undefined
 
 export async function getDb(): Promise<Db> {

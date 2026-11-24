@@ -2,13 +2,15 @@
 
 // Vessel Master review page (/inspections/vessels): what the master holds for each vessel, the status of every value and
 // what a new SIR does with it, the workbook's sources and data-quality items, and the issues Superintendents reported.
-// Read-only: the master is changed only by the admin import. "Report issue" records a flag for the office to review.
+// Values change only through the admin import or "Verify" (a Superintendent's check on board against a ship's
+// document, recorded with its evidence). "Report issue" records a flag for the office to review.
 
-import { ChevronRight, Flag as FlagIcon, Ship } from "lucide-react"
+import { ChevronRight, Flag as FlagIcon, ShieldCheck, Ship } from "lucide-react"
 import Link from "next/link"
 import { useCallback, useEffect, useState } from "react"
 import { ModuleBadge } from "@/components/shell/app-shell"
 import { FlagForm } from "@/components/vessels/flag-form"
+import { VerifyForm } from "@/components/vessels/verify-form"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { apiFetch } from "@/lib/api"
@@ -25,6 +27,7 @@ type Review = {
   sources: Row[]
   issues: Row[]
   flags: Row[]
+  verifications: Row[]
   revisions: { revision: number; at: string; by: string; reason: string; changed: number }[]
 }
 
@@ -95,7 +98,8 @@ export function VesselMasterReview() {
           <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground text-pretty">
             The vessel particulars a new inspection report starts from, with the status of every value. VERIFIED values are
             filled in; PROVISIONAL values are filled in or offered for confirmation; values in conflict or awaiting physical
-            verification are not released. This page is read-only: if a value is wrong or missing, use “Report issue”.
+            verification are not released. Checked a value against the ship&apos;s document on board? Use “Verify” to record it as
+            VERIFIED with its evidence. If a value is wrong or missing, use “Report issue”.
           </p>
           {list?.source === "cache" && (
             <p className="text-sm text-amber-700 dark:text-amber-400">Offline: vessel list saved on this device on {when(list.fetchedAt)}.</p>
@@ -142,7 +146,8 @@ export function VesselMasterReview() {
 
 function VesselDetail({ review, onFlagged }: { review: Review; onFlagged: () => void }) {
   const { vessel } = review
-  const [flagging, setFlagging] = useState<string | null>(null)
+  const [panel, setPanel] = useState<{ key: string; kind: "flag" | "verify" } | null>(null)
+  const toggle = (key: string, kind: "flag" | "verify") => setPanel(panel?.key === key && panel.kind === kind ? null : { key, kind })
   const counts = vessel.groups.flatMap((g) => g.fields).reduce<Record<string, number>>((n, f) => ({ ...n, [f.status]: (n[f.status] ?? 0) + 1 }), {})
   return (
     <>
@@ -180,8 +185,9 @@ function VesselDetail({ review, onFlagged }: { review: Review; onFlagged: () => 
               </thead>
               <tbody>
                 {group.fields.map((f) => (
-                  <FieldRow key={f.key} field={f} vesselId={vessel.vesselId} open={flagging === f.key} onOpen={() => setFlagging(flagging === f.key ? null : f.key)}
-                    onDone={() => { setFlagging(null); onFlagged() }} />
+                  <FieldRow key={f.key} field={f} vesselId={vessel.vesselId} canVerify={Boolean(vessel.workbookId)}
+                    panel={panel?.key === f.key ? panel.kind : null} onToggle={(kind) => toggle(f.key, kind)}
+                    onClose={() => setPanel(null)} onDone={() => { setPanel(null); onFlagged() }} />
                 ))}
               </tbody>
             </table>
@@ -189,6 +195,9 @@ function VesselDetail({ review, onFlagged }: { review: Review; onFlagged: () => 
         </section>
       ))}
 
+      <RowsTable title="Verified on board" empty="No values verified on board yet." rows={review.verifications ?? []}
+        columns={[["at", "When"], ["field", "Field"], ["value", "Verified value"], ["documentType", "Document"], ["documentRef", "Reference"], ["documentDate", "Dated"], ["byName", "By"], ["note", "Note"]]}
+        format={{ at: (v) => when(String(v)) }} />
       <RowsTable title="Reported issues" empty="No issues reported for this vessel." rows={review.flags}
         columns={[["at", "Reported"], ["field", "Field"], ["currentValue", "Master value"], ["proposedValue", "Proposed"], ["reason", "Reason"], ["reporterName", "By"], ["status", "Status"]]}
         format={{ at: (v) => when(String(v)) }} />
@@ -202,7 +211,9 @@ function VesselDetail({ review, onFlagged }: { review: Review; onFlagged: () => 
   )
 }
 
-function FieldRow({ field, vesselId, open, onOpen, onDone }: { field: ViewField; vesselId: string; open: boolean; onOpen: () => void; onDone: () => void }) {
+function FieldRow({ field, vesselId, canVerify, panel, onToggle, onClose, onDone }: {
+  field: ViewField; vesselId: string; canVerify: boolean; panel: "flag" | "verify" | null; onToggle: (kind: "flag" | "verify") => void; onClose: () => void; onDone: () => void
+}) {
   return (
     <>
       <tr className="border-t align-top">
@@ -222,16 +233,29 @@ function FieldRow({ field, vesselId, open, onOpen, onDone }: { field: ViewField;
         </td>
         <td className="px-3 py-2 text-muted-foreground">{RELEASE_LABEL[field.release]}</td>
         <td className="px-3 py-2 text-right">
-          <Button variant="ghost" size="sm" onClick={onOpen} aria-expanded={open}>
-            <FlagIcon aria-hidden />
-            Report issue
-          </Button>
+          <div className="flex justify-end gap-1">
+            {canVerify && field.status !== "VERIFIED" && (
+              <Button variant="ghost" size="sm" onClick={() => onToggle("verify")} aria-expanded={panel === "verify"} className="text-emerald-700 dark:text-emerald-400">
+                <ShieldCheck aria-hidden />
+                Verify
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => onToggle("flag")} aria-expanded={panel === "flag"}>
+              <FlagIcon aria-hidden />
+              Report issue
+            </Button>
+          </div>
         </td>
       </tr>
-      {open && (
+      {panel && (
         <tr className="border-t bg-muted/30">
           <td colSpan={5} className="px-3 py-3">
-            <FlagForm vesselId={vesselId} field={field.key} label={field.label} masterValue={field.display} onDone={onDone} />
+            {panel === "flag" ? (
+              <FlagForm vesselId={vesselId} field={field.key} label={field.label} masterValue={field.display} onDone={onDone} onCancel={onClose} />
+            ) : (
+              <VerifyForm vesselId={vesselId} field={field.key} label={field.label} unit={field.unit}
+                value={field.value === null ? "" : field.display.replace(field.unit ? ` ${field.unit}` : "", "")} onVerified={onDone} onCancel={onClose} />
+            )}
           </td>
         </tr>
       )}

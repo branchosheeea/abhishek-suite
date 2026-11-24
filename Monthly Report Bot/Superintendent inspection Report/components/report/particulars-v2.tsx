@@ -5,7 +5,7 @@
 // Superintendent chose ("Use this value"), or their own entry. Values the master does not release are left empty with
 // the reason. "Refresh from Vessel Master" shows every difference before anything changes.
 
-import { Flag as FlagIcon, Loader2, RefreshCw } from "lucide-react"
+import { Flag as FlagIcon, Loader2, RefreshCw, ShieldCheck } from "lucide-react"
 import Link from "next/link"
 import { useState } from "react"
 import { toast } from "sonner"
@@ -14,9 +14,10 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { FlagForm } from "@/components/vessels/flag-form"
+import { VerifyForm } from "@/components/vessels/verify-form"
 import { useRecordedBy } from "@/hooks/use-vessel-master"
 import type { FieldDef, Report, SnapshotField } from "@/lib/form-schema"
-import { applyRefresh, confirmOffer, fromMaster, originOf, PARTICULARS_GROUPS_V2, refreshPlan, setParticular, type RefreshRow } from "@/lib/particulars"
+import { applyRefresh, applyVerification, confirmOffer, fromMaster, originOf, PARTICULARS_GROUPS_V2, refreshPlan, setParticular, type RefreshRow } from "@/lib/particulars"
 import { fetchVesselView } from "@/lib/vessel-cache"
 import type { VesselView } from "@/lib/vessel-master/view"
 import { cn } from "@/lib/utils"
@@ -37,7 +38,8 @@ export function ParticularsV2({ report, update, go }: { report: Report; update: 
   const master = fromMaster(s)
   const [refresh, setRefresh] = useState<{ view: VesselView; fetchedAt: string; rows: RefreshRow[] } | null>(null)
   const [checking, setChecking] = useState(false)
-  const [flagging, setFlagging] = useState<string | null>(null)
+  const [panel, setPanel] = useState<{ key: string; kind: "flag" | "verify" } | null>(null)
+  const toggle = (key: string, kind: "flag" | "verify") => setPanel(panel?.key === key && panel.kind === kind ? null : { key, kind })
 
   const checkRefresh = async () => {
     if (!s.vesselId) return
@@ -94,9 +96,15 @@ export function ParticularsV2({ report, update, go }: { report: Report; update: 
                 locked={field.key === "vessel_name" && master}
                 onChange={(value) => update((r) => setParticular(r, field.key, value, by, new Date().toISOString()))}
                 onUseOffer={() => update((r) => confirmOffer(r, field.key, by, new Date().toISOString()))}
-                flagging={flagging === field.key}
-                onFlag={master ? () => setFlagging(flagging === field.key ? null : field.key) : undefined}
-                onFlagDone={() => setFlagging(null)}
+                panel={panel?.key === field.key ? panel.kind : null}
+                onFlag={master ? () => toggle(field.key, "flag") : undefined}
+                onVerify={master && s.source !== "pending" ? () => toggle(field.key, "verify") : undefined}
+                onClose={() => setPanel(null)}
+                onVerified={(view) => {
+                  const verified = view.groups.flatMap((g) => g.fields).find((f) => f.key === field.key)
+                  if (verified) update((r) => applyVerification(r, field.key, verified, by, new Date().toISOString()))
+                  setPanel(null)
+                }}
               />
             ))}
           </div>
@@ -196,15 +204,17 @@ function RefreshPanel({ rows, revision, onApply, onCancel }: { rows: RefreshRow[
   )
 }
 
-function ParticularField({ report, field, locked, onChange, onUseOffer, flagging, onFlag, onFlagDone }: {
+function ParticularField({ report, field, locked, onChange, onUseOffer, panel, onFlag, onVerify, onClose, onVerified }: {
   report: Report
   field: FieldDef
   locked: boolean
   onChange: (value: string) => void
   onUseOffer: () => void
-  flagging: boolean
+  panel: "flag" | "verify" | null
   onFlag?: () => void
-  onFlagDone: () => void
+  onVerify?: () => void
+  onClose: () => void
+  onVerified: (view: VesselView) => void
 }) {
   const s = report.vesselSnapshot!
   const id = `particulars-${field.key}`
@@ -278,15 +288,24 @@ function ParticularField({ report, field, locked, onChange, onUseOffer, flagging
           </span>
         )}
         {origin === "empty" && master && !m?.value && s.source !== "pending" && <span>Not in the Vessel Master.</span>}
+        {onVerify && m?.status !== "VERIFIED" && (
+          <button type="button" onClick={onVerify} className="inline-flex items-center gap-1 text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-400" aria-expanded={panel === "verify"}>
+            <ShieldCheck className="size-3" aria-hidden />
+            Verify on board
+          </button>
+        )}
         {onFlag && (
-          <button type="button" onClick={onFlag} className="inline-flex items-center gap-1 underline-offset-2 hover:text-foreground hover:underline" aria-expanded={flagging}>
+          <button type="button" onClick={onFlag} className="inline-flex items-center gap-1 underline-offset-2 hover:text-foreground hover:underline" aria-expanded={panel === "flag"}>
             <FlagIcon className="size-3" aria-hidden />
             Report issue
           </button>
         )}
       </div>
-      {flagging && s.vesselId && (
-        <FlagForm vesselId={s.vesselId} field={field.key} label={field.label} masterValue={m?.value ?? ""} reportId={report.id} proposed={origin === "entered" ? value : ""} onDone={onFlagDone} onCancel={onFlagDone} />
+      {panel === "flag" && s.vesselId && (
+        <FlagForm vesselId={s.vesselId} field={field.key} label={field.label} masterValue={m?.value ?? ""} reportId={report.id} proposed={origin === "entered" ? value : ""} onDone={onClose} onCancel={onClose} />
+      )}
+      {panel === "verify" && s.vesselId && (
+        <VerifyForm vesselId={s.vesselId} field={field.key} label={field.label} unit={field.unit} value={value || m?.value || ""} reportId={report.id} onVerified={onVerified} onCancel={onClose} />
       )}
     </div>
   )

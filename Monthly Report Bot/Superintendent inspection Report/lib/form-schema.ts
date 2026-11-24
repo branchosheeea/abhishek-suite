@@ -526,7 +526,7 @@ export type VesselSnapshot = {
   confirmed: Record<string, { value: string; by: string; at: string }>
   /** Values the Superintendent entered that are not the master's; `flag` tracks the automatic correction flag. */
   entered: Record<string, { by: string; at: string; flag?: "pending" | "sent"; flagId?: string }>
-  history: { at: string; by: string; action: "select" | "refresh" | "other-vessel" | "resolved"; masterRevision: number | null; changed: string[] }[]
+  history: { at: string; by: string; action: "select" | "refresh" | "other-vessel" | "resolved" | "verified"; masterRevision: number | null; changed: string[] }[]
 }
 
 export type Report = {

@@ -10,6 +10,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import { FIELDS } from "./fields"
 import { buildMaster, type MasterDraft, type MasterField, type Rejected, type ReviewException } from "./rules"
+import { verifiedOnBoard } from "./verify"
 import type { ParsedWorkbook, Row } from "./workbook"
 
 export type StoredVessel = MasterDraft & {
@@ -53,6 +54,8 @@ export type VesselPlan = {
   workbookId: string | null
   name: string
   changes: FieldChange[]
+  /** Name, aliases, IMO, fleet group, statuses or basis differ from the master record. */
+  identityChanged: boolean
   draft: MasterDraft
 }
 export type PlanCounts = {
@@ -111,7 +114,7 @@ export function planImport(book: ParsedWorkbook, fileName: string, existing: Sto
     }
     // An identity-only record the workbook does not list is left exactly as it is.
     if (!draft.workbookId && vessel) {
-      vessels.push({ action: "unchanged", match: how, vesselId: vessel.vesselId, workbookId: null, name: vessel.name, changes: [], draft })
+      vessels.push({ action: "unchanged", match: how, vesselId: vessel.vesselId, workbookId: null, name: vessel.name, changes: [], identityChanged: false, draft })
       continue
     }
     const changes: FieldChange[] = []
@@ -119,13 +122,16 @@ export function planImport(book: ParsedWorkbook, fileName: string, existing: Sto
       const before = vessel?.fields[spec.key]
       const after = draft.fields[spec.key]
       if (before && same(pick(before), pick(after)) && same(before.reasons, after.reasons) && same(before.sourceIds, after.sourceIds)) continue
+      // Verified on board with evidence: kept while the workbook has the same value (a different value is a VERIFIED
+      // overwrite below, which needs an explicit override).
+      if (verifiedOnBoard(before) && same(before!.value, after.value)) continue
       if (!before && after.value === null && after.status === "MISSING" && vessel) continue
       const kind: FieldChange["kind"] = !before || before.value === null ? "add" : same(before.value, after.value) ? "status" : "update"
       changes.push({ field: spec.key, before: pick(before), after: pick(after)!, kind, verifiedOverwrite: before?.status === "VERIFIED" && !same(before.value, after.value) })
     }
     const identityChanged = vessel ? IDENTITY_KEYS.some((k) => !same(vessel[k], draft[k])) : true
     const action: VesselPlan["action"] = !vessel ? "create" : changes.length || identityChanged ? "update" : "unchanged"
-    vessels.push({ action, match: how, vesselId: vessel?.vesselId ?? null, workbookId: draft.workbookId, name: draft.name, changes, draft })
+    vessels.push({ action, match: how, vesselId: vessel?.vesselId ?? null, workbookId: draft.workbookId, name: draft.name, changes, identityChanged, draft })
   }
 
   const counts: PlanCounts = {
@@ -199,6 +205,8 @@ export async function commitImport(store: MasterStore, book: ParsedWorkbook, fil
         fields[change.field] = v.draft.fields[change.field]
         applied.push({ field: change.field, before: change.before, after: change.after })
       }
+      // Every change was a protected VERIFIED value and nothing else differs: no new revision.
+      if (!applied.length && !v.identityChanged) continue
       const doc: StoredVessel = {
         ...current, ...Object.fromEntries((["name", "aliases", "legacyKeys", "imo", "fleetGroup", "activeStatus", "groupStatus", "performanceBasis", "sourceNote", "workbookId"] as const).map((k) => [k, v.draft[k]])),
         aliases: [...new Set([...current.aliases, ...v.draft.aliases])], legacyKeys: [...new Set([...current.legacyKeys, ...v.draft.legacyKeys])],

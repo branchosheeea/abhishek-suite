@@ -17,7 +17,7 @@ import {
 } from "./form-schema"
 import { PARTICULARS_GROUPS_V2, V2_KEYS, WIDE_KEYS } from "./particulars-groups"
 import { FIELDS, PAIRED, SIR_GROUPS } from "./vessel-master/fields"
-import { formatValue, type VesselView } from "./vessel-master/view"
+import { formatValue, type VesselView, type ViewField } from "./vessel-master/view"
 import { vesselIdFor } from "./vessels"
 
 export { PARTICULARS_GROUPS_V2, V2_KEYS }
@@ -157,6 +157,25 @@ export function markFlagSent(report: Report, key: string, flagId: string): Repor
   const s = report.vesselSnapshot
   if (!s?.entered[key]) return report
   return { ...report, vesselSnapshot: { ...s, entered: { ...s.entered, [key]: { ...s.entered[key], flag: "sent", flagId } } } }
+}
+
+/** A value verified on board from this report: the report's copy becomes the verified value (VERIFIED, filled). */
+export function applyVerification(report: Report, key: string, field: ViewField, by: string, now: string): Report {
+  const s = report.vesselSnapshot
+  if (!s) return report
+  const value = formatValue(key, field.value, null)
+  const confirmed = { ...s.confirmed }
+  const entered = { ...s.entered }
+  delete confirmed[key]
+  delete entered[key]
+  return {
+    ...report, particulars: { ...report.particulars, [key]: value },
+    vesselSnapshot: {
+      ...s, confirmed, entered,
+      fields: { ...s.fields, [key]: { value, status: field.status, release: field.release, reasons: field.reasons, physicalVerification: field.physicalVerification } },
+      history: [...s.history, { at: now, by, action: "verified", masterRevision: s.masterRevision, changed: [key] }],
+    },
+  }
 }
 
 // ── Refresh from the Vessel Master ───────────────────────────────────────────
