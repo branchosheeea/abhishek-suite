@@ -8,7 +8,6 @@ import {
   CRITICAL_EQUIPMENT_ITEMS,
   DETAILS_GROUPS,
   MANAGEMENT_SECTION_GROUPS,
-  PARTICULARS_GROUPS,
   SCOPE_ITEMS,
   SECTIONS,
   SUMMARY_FIELDS,
@@ -23,6 +22,7 @@ import {
   type SectionId,
 } from "./form-schema"
 import { CONDITION_ITEM_SECTIONS } from "./narrative/sections"
+import { particularsOutstanding } from "./particulars"
 
 export type Outstanding = { section: SectionId; label: string }
 
@@ -67,7 +67,8 @@ function requiredFields(section: SectionId, groups: FieldGroup[], values: Record
 export function outstandingForReview(report: Report, photoCount: number): Outstanding[] {
   const out: Outstanding[] = []
   requiredFields("details", DETAILS_GROUPS, report.details, out)
-  requiredFields("particulars", PARTICULARS_GROUPS, report.particulars, out)
+  // Earlier reports: the four typed groups; new reports: the Vessel Master groups (and no pending snapshot).
+  for (const label of particularsOutstanding(report)) out.push({ section: "particulars", label })
   for (const field of SUMMARY_FIELDS) {
     if (!filled(report.summary?.[field.key])) out.push({ section: "summary", label: `${field.label} (save the generated text)` })
   }

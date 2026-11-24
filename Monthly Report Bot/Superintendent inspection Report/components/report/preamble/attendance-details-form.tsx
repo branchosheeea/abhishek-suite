@@ -22,7 +22,7 @@ import { FLEET_VESSELS } from "@/lib/vessels"
 import { ConditionalField, FormSection, Recommendation, SelectField, TextField } from "./fields"
 import type { PreambleFormProps } from "./form-types"
 
-export function AttendanceDetailsForm({ inputs, facts, set, setDetail, messages, disabled }: PreambleFormProps) {
+export function AttendanceDetailsForm({ inputs, facts, set, setDetail, messages, disabled, vesselChosenInDetails }: PreambleFormProps) {
   const rec = recommendationsFor(inputs.inspectionType)
   const allowed = allowedLocationTypes(inputs.inspectionType)
   const typeLabel = findOption(INSPECTION_TYPES, inputs.inspectionType)?.label.toLowerCase()
@@ -41,13 +41,13 @@ export function AttendanceDetailsForm({ inputs, facts, set, setDetail, messages,
           label="Vessel"
           required
           value={facts.vesselName}
-          list="preamble-fleet-vessels"
-          placeholder="Search the fleet or type a name"
-          hint="Shared with Inspection Details."
+          list={vesselChosenInDetails ? undefined : "preamble-fleet-vessels"}
+          placeholder={vesselChosenInDetails ? "Choose the vessel in Inspection Details" : "Search the fleet or type a name"}
+          hint={vesselChosenInDetails ? "Chosen in Inspection Details (Vessel Master)." : "Shared with Inspection Details."}
           tooltip="Choose a fleet vessel from the list, or type the name of any other vessel. The name is used exactly as entered."
           onChange={(value) => setDetail("vessel", value)}
           messages={messages("vessel")}
-          disabled={disabled}
+          disabled={disabled || vesselChosenInDetails}
           className="@md:col-span-2"
         />
         <datalist id="preamble-fleet-vessels">

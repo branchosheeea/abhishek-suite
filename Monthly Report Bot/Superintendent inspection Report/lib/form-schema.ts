@@ -1,7 +1,10 @@
 import type { PreambleState } from "./narrative/preamble/model"
 import type { SectionState } from "./narrative/section"
 import type { NarrativeSectionId } from "./narrative/types"
+import { PARTICULARS_GROUPS_V2 } from "./particulars-groups"
 import { SUPERINTENDENTS } from "./superintendents"
+import type { Status } from "./vessel-master/fields"
+import type { Release } from "./vessel-master/rules"
 
 export const FORM_CODE = "16.02.00.003.04"
 export const FORM_TITLE = "Superintendent's Detailed Inspection Report"
@@ -54,6 +57,8 @@ export const DETAILS_GROUPS: FieldGroup[] = [
   },
 ]
 
+/** Principal Particulars of reports made before the Vessel Master (no vesselSnapshot): four groups, typed by hand.
+ *  Kept unchanged so those reports open, complete and print exactly as before. New reports use lib/particulars.ts. */
 export const PARTICULARS_GROUPS: FieldGroup[] = [
   {
     title: "Identification",
@@ -492,6 +497,38 @@ export const isCriticalTested = (item: (typeof CRITICAL_EQUIPMENT_ITEMS)[number]
  */
 export type Narratives = { preamble?: PreambleState } & { [K in Exclude<NarrativeSectionId, "preamble">]?: SectionState }
 
+/** One Vessel Master value as captured into a report: the value as text (no unit), its status and release. */
+export type SnapshotField = { value: string; status: Status; release: Release; reasons: string[]; physicalVerification: boolean }
+
+/**
+ * The vessel particulars a report was started from (lib/particulars.ts). Its presence makes the report use the six
+ * Vessel Master groups; reports without one keep the earlier four groups. Fixed once captured: a later change in the
+ * master never alters it; only "Refresh from Vessel Master" (with confirmation) or choosing another vessel does.
+ *   none           no vessel chosen yet
+ *   master         captured from the Vessel Master online
+ *   offline-cache  captured from the copy saved in this browser (fetchedAt says when that copy was fetched)
+ *   pending        vessel chosen offline with no saved copy: particulars follow once online; approval waits
+ *   not-in-master  a vessel the master does not hold: particulars typed by hand
+ */
+export type VesselSnapshot = {
+  schema: 1
+  source: "none" | "master" | "offline-cache" | "pending" | "not-in-master"
+  vesselId: string | null
+  name: string
+  imo: string | null
+  masterRevision: number | null
+  capturedAt: string | null
+  fetchedAt: string | null
+  /** Section F's basis label ("Reference: shop test"; "Guaranteed …" only for a verified contractual basis). */
+  basisLabel: string | null
+  fields: Record<string, SnapshotField>
+  /** Offered values the Superintendent chose to use ("Use this value"). */
+  confirmed: Record<string, { value: string; by: string; at: string }>
+  /** Values the Superintendent entered that are not the master's; `flag` tracks the automatic correction flag. */
+  entered: Record<string, { by: string; at: string; flag?: "pending" | "sent"; flagId?: string }>
+  history: { at: string; by: string; action: "select" | "refresh" | "other-vessel" | "resolved"; masterRevision: number | null; changed: string[] }[]
+}
+
 export type Report = {
   id: string
   createdAt: number
@@ -519,6 +556,8 @@ export type Report = {
     superintendentName: string
   }
   narratives?: Narratives
+  /** Vessel Master particulars (optional: reports made before the Vessel Master have none and keep four groups). */
+  vesselSnapshot?: VesselSnapshot
   deletedPhotoIds: string[]
 }
 
@@ -552,6 +591,19 @@ export function createEmptyReport(id: string): Report {
     narratives: {},
     deletedPhotoIds: [],
   }
+}
+
+export function emptyVesselSnapshot(): VesselSnapshot {
+  return {
+    schema: 1, source: "none", vesselId: null, name: "", imo: null, masterRevision: null, capturedAt: null, fetchedAt: null,
+    basisLabel: null, fields: {}, confirmed: {}, entered: {}, history: [],
+  }
+}
+
+/** A brand-new report: six-group particulars from the Vessel Master. Never used as defaults for a loaded report
+ *  (createEmptyReport is), so a report saved before the Vessel Master never turns into a six-group one. */
+export function createNewReport(id: string): Report {
+  return { ...createEmptyReport(id), vesselSnapshot: emptyVesselSnapshot() }
 }
 
 export type SectionId =
@@ -606,7 +658,7 @@ export function sectionProgress(
 ): Record<SectionId, { done: number; total: number }> {
   return {
     details: fieldsProgress(DETAILS_GROUPS, report.details),
-    particulars: fieldsProgress(PARTICULARS_GROUPS, report.particulars),
+    particulars: fieldsProgress(report.vesselSnapshot ? PARTICULARS_GROUPS_V2 : PARTICULARS_GROUPS, report.particulars),
     summary: fieldsProgress([{ fields: SUMMARY_FIELDS }], report.summary),
     scope: {
       done:

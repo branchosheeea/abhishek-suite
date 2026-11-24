@@ -4,6 +4,7 @@ import type { jsPDF as JsPDF } from "jspdf"
 import type { RowInput } from "jspdf-autotable"
 import companyLogo from "../public/logo.png"
 import { outstandingForFinal, outstandingForReview, superintendentName, superintendentSignature } from "./completeness"
+import { particularsForPdf } from "./particulars"
 import {
   COVERAGE_LABELS,
   areaOverview,
@@ -21,7 +22,6 @@ import {
   DETAILS_GROUPS,
   FORM_CODE,
   MANAGEMENT_SECTION_GROUPS,
-  PARTICULARS_GROUPS,
   RATINGS,
   SCOPE_ITEMS,
   SUMMARY_FIELDS,
@@ -527,9 +527,10 @@ export async function generateReportPdf(report: Report, photos: Photo[]) {
   }
 
   heading("Principal Particulars")
-  for (const group of PARTICULARS_GROUPS) {
+  // Earlier reports print their four groups exactly as before; new reports the six Vessel Master groups.
+  for (const group of particularsForPdf(report)) {
     if (group.title) subheading(group.title)
-    kvTable(group.fields, report.particulars)
+    kvTable(group.fields, group.values)
   }
 
   heading("Executive Summary")

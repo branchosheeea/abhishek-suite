@@ -6,6 +6,8 @@ const nextConfig = {
     unoptimized: true,
   },
   poweredByHeader: false,
+  // NEXT_DIST_DIR=.next/verify lets a build be checked while NeraVeda's server keeps serving the current .next.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   async headers() {
     // Another localhost page (any other local port) must not frame or probe this app.
     return [{

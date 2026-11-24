@@ -14,7 +14,7 @@ import { Progress } from "@/components/ui/progress"
 import { useOnline } from "@/hooks/use-online"
 import { apiFetch } from "@/lib/api"
 import { isApproved } from "@/lib/completeness"
-import { FORM_CODE, createEmptyReport, overallProgress, type Report } from "@/lib/form-schema"
+import { FORM_CODE, createNewReport, overallProgress, type Report } from "@/lib/form-schema"
 import {
   deleteReportLocal,
   getPendingReportDeletes,
@@ -28,6 +28,9 @@ import {
 import { WEB_MODULES } from "@/lib/modules"
 import { formatDate } from "@/lib/pdf"
 import { isPhotoDirty, isReportDirty, syncAll } from "@/lib/sync"
+import { captureFor, useRecordedBy } from "@/hooks/use-vessel-master"
+import { fromMaster, selectOtherVessel, selectVessel, v1ToV2 } from "@/lib/particulars"
+import { fetchVesselList } from "@/lib/vessel-cache"
 
 type Row = { report: Report; photoCount: number; pending: boolean; issue: "conflict" | "locked" | null }
 
@@ -53,6 +56,7 @@ async function loadRows(): Promise<Row[]> {
 
 export function ReportList() {
   const router = useRouter()
+  const by = useRecordedBy(null)
   const online = useOnline()
   const { data: rows, mutate, isLoading } = useSWR("local-reports", loadRows)
   const { isValidating: syncing, mutate: runSync } = useSWR(
@@ -82,16 +86,24 @@ export function ReportList() {
     apiFetch("/api/inspections/device", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(status) }).catch(() => {})
   }, [rows, online])
 
+  // "New inspection for this vessel": a fleet vessel gets fresh particulars from the Vessel Master (never the old
+  // report's); a vessel not in the master keeps the particulars typed last time (moved to the six groups if older).
   const createReport = async (fromId?: string) => {
     const id = newId()
-    const report = createEmptyReport(id)
+    let report = createNewReport(id)
     const source = fromId ? rows?.find((r) => r.report.id === fromId)?.report : undefined
     if (source) {
-      report.particulars = { ...source.particulars }
-      report.details = {
-        vessel: source.details.vessel ?? "",
-        owners: source.details.owners ?? "",
-        manager: source.details.manager ?? "",
+      const now = new Date().toISOString()
+      const name = (source.details.vessel || source.particulars.shipName || source.particulars.vessel_name || "").trim()
+      const masterId = fromMaster(source.vesselSnapshot) ? source.vesselSnapshot!.vesselId : null
+      const list = masterId ? null : await fetchVesselList()
+      const entry = masterId
+        ? { vesselId: masterId, name: source.vesselSnapshot!.name, imo: source.vesselSnapshot!.imo }
+        : list?.data.find((v) => v.selectable && v.name.toLowerCase() === name.toLowerCase())
+      if (entry) report = selectVessel(report, await captureFor(entry), by, now)
+      else if (name) {
+        report = selectOtherVessel(report, name, by, now)
+        report.particulars = { ...(source.vesselSnapshot ? source.particulars : v1ToV2(source.particulars)), vessel_name: name }
       }
     }
     await putReport(report)
@@ -247,7 +259,7 @@ export function ReportList() {
                         variant="ghost"
                         size="icon-sm"
                         onClick={() => createReport(report.id)}
-                        aria-label={`Start new inspection for ${name} using its particulars`}
+                        aria-label={`Start new inspection for ${name}`}
                         title="New inspection for this vessel"
                       >
                         <Copy aria-hidden />

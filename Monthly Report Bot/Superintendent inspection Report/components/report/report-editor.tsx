@@ -8,6 +8,8 @@ import { OnlinePill, SavePill } from "@/components/status-pill"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { useReportEditor } from "@/hooks/use-report-editor"
+import { useAutoFlags, usePendingSnapshot } from "@/hooks/use-vessel-master"
+import { isV2 } from "@/lib/particulars"
 import { generateReportPdf } from "@/lib/pdf"
 import {
   CONDITION_SECTIONS,
@@ -25,6 +27,8 @@ import {
 import { ConditionList } from "./condition-list"
 import { CriticalEquipmentSection } from "./critical-equipment-section"
 import { FieldGroups } from "./field-grid"
+import { ParticularsV2 } from "./particulars-v2"
+import { VesselPicker } from "./vessel-picker"
 import { PhotosSection } from "./photos-section"
 import { ScopeSection } from "./scope-section"
 import { SectionNav } from "./section-nav"
@@ -73,6 +77,9 @@ export function ReportEditor({ id }: { id: string }) {
   const overall = report ? overallProgress(report, photos.length) : 0
   const outstanding = useMemo(() => (report ? outstandingForReview(report, photos.length) : []), [report, photos.length])
   const outstandingMap = useMemo(() => outstandingBySection(outstanding), [outstanding])
+  // Vessel Master: complete particulars chosen offline, and report mandatory values the master could not supply.
+  usePendingSnapshot(report, update)
+  useAutoFlags(report, update)
 
   if (isLoading || !report || !progress) {
     return (
@@ -169,7 +176,11 @@ export function ReportEditor({ id }: { id: string }) {
               Section {index + 1} of {SECTIONS.length}
             </p>
             <h2 className="text-2xl font-semibold tracking-tight text-balance">{current.title}</h2>
-            {DESCRIPTIONS[active] && <p className="text-sm text-muted-foreground text-pretty">{DESCRIPTIONS[active]}</p>}
+            {DESCRIPTIONS[active] && (
+              <p className="text-sm text-muted-foreground text-pretty">
+                {active === "particulars" && isV2(report) ? "Key particulars of the vessel, from the Vessel Master." : DESCRIPTIONS[active]}
+              </p>
+            )}
             {active !== "signoff" && outstandingMap.get(active)?.length ? (
               <p className="mt-1 flex items-start gap-1.5 text-xs text-destructive">
                 <AlertCircle className="mt-px size-3.5 shrink-0" aria-hidden />
@@ -260,8 +271,18 @@ function StagePill({ stage, outstanding, onClick }: { stage: ReturnType<typeof r
 function SectionBody({ active, report, photos, setString, setCondition, update, saveNow, addPhoto, updatePhoto, removePhoto, go }: BodyProps) {
   switch (active) {
     case "details":
-      return <FieldGroups groups={DETAILS_GROUPS} values={report.details} idPrefix="details" onChange={setString("details")} />
+      return (
+        <FieldGroups
+          groups={DETAILS_GROUPS}
+          values={report.details}
+          idPrefix="details"
+          onChange={setString("details")}
+          // New reports choose the vessel from the Vessel Master (or "Other vessel"); earlier reports keep the typed name.
+          renderField={isV2(report) ? (field, fieldId) => (field.key === "vessel" ? <VesselPicker report={report} update={update} id={fieldId} /> : undefined) : undefined}
+        />
+      )
     case "particulars": {
+      if (isV2(report)) return <ParticularsV2 report={report} update={update} go={go} />
       const mismatch = vesselNameMismatch(report)
       return (
         <div className="flex flex-col gap-6">

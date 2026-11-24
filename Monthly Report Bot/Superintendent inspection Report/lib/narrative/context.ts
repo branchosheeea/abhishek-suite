@@ -99,7 +99,7 @@ export function buildReportContext(report: Report): ReportContext {
     vesselCondition: vesselConditionFrom(preamble),
     items,
     critical: { tested, defects, total: CRITICAL_EQUIPMENT_ITEMS.length },
-    vesselAge: ageAt(report.particulars?.yearBuilt, report.details?.dateFrom ?? ""),
+    vesselAge: ageAt(report.particulars?.yearBuilt ?? report.particulars?.year_built, report.details?.dateFrom ?? ""),
     sectionInputs: Object.fromEntries(
       Object.entries(report.narratives ?? {}).map(([key, value]) => [key, ((value as { inputs?: Record<string, unknown> } | undefined)?.inputs ?? {})]),
     ),

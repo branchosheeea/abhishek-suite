@@ -5,7 +5,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import type { FieldDef, FieldGroup } from "@/lib/form-schema"
 import { cn } from "@/lib/utils"
-import { useRef, useState } from "react"
+import { useRef, useState, type ReactNode } from "react"
 import { FormatToolbar } from "./format-toolbar"
 
 /** Today's date in local time as YYYY-MM-DD (what a date input expects). */
@@ -29,9 +29,11 @@ type Props = {
   values: Record<string, string>
   idPrefix: string
   onChange: (key: string, value: string) => void
+  /** Replaces the input of a field (e.g. the Vessel Master picker for Vessel); undefined keeps the standard input. */
+  renderField?: (field: FieldDef, id: string) => ReactNode | undefined
 }
 
-export function FieldGroups({ groups, values, idPrefix, onChange }: Props) {
+export function FieldGroups({ groups, values, idPrefix, onChange, renderField }: Props) {
   return (
     <div className="flex flex-col gap-8">
       {groups.map((group, gi) => (
@@ -47,16 +49,21 @@ export function FieldGroups({ groups, values, idPrefix, onChange }: Props) {
             </p>
           )}
           <div className="grid grid-cols-1 gap-x-4 gap-y-5 sm:grid-cols-2 lg:grid-cols-3">
-            {group.fields.map((field) => (
-              <FieldInput
-                key={field.key}
-                id={`${idPrefix}-${field.key}`}
-                field={field}
-                value={values[field.key] ?? ""}
-                max={field.type === "date" && field.before ? latestAllowed(values[field.before]) : undefined}
-                onChange={(v) => onChange(field.key, v)}
-              />
-            ))}
+            {group.fields.map((field) => {
+              const custom = renderField?.(field, `${idPrefix}-${field.key}`)
+              return custom ? (
+                <div key={field.key} className="contents">{custom}</div>
+              ) : (
+                <FieldInput
+                  key={field.key}
+                  id={`${idPrefix}-${field.key}`}
+                  field={field}
+                  value={values[field.key] ?? ""}
+                  max={field.type === "date" && field.before ? latestAllowed(values[field.before]) : undefined}
+                  onChange={(v) => onChange(field.key, v)}
+                />
+              )
+            })}
           </div>
         </fieldset>
       ))}

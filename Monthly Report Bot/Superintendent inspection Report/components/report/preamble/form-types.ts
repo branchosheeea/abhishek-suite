@@ -12,6 +12,8 @@ export type PreambleFormProps = {
   setDetail: (field: DetailsField, value: string) => void
   messages: (field: IssueField) => FieldMessages
   disabled: boolean
+  /** New reports: the vessel is chosen from the Vessel Master in Inspection Details, not typed here. */
+  vesselChosenInDetails?: boolean
 }
 
 /** Keeps multi-select values in the fixed option order, so saved data and generated text are stable. */

@@ -7,13 +7,10 @@
 import { ChevronRight, Flag as FlagIcon, Ship } from "lucide-react"
 import Link from "next/link"
 import { useCallback, useEffect, useState } from "react"
-import { toast } from "sonner"
 import { ModuleBadge } from "@/components/shell/app-shell"
+import { FlagForm } from "@/components/vessels/flag-form"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
 import { apiFetch } from "@/lib/api"
 import { WEB_MODULES } from "@/lib/modules"
 import { fetchVesselList, type Cached } from "@/lib/vessel-cache"
@@ -234,57 +231,11 @@ function FieldRow({ field, vesselId, open, onOpen, onDone }: { field: ViewField;
       {open && (
         <tr className="border-t bg-muted/30">
           <td colSpan={5} className="px-3 py-3">
-            <FlagForm field={field} vesselId={vesselId} onDone={onDone} />
+            <FlagForm vesselId={vesselId} field={field.key} label={field.label} masterValue={field.display} onDone={onDone} />
           </td>
         </tr>
       )}
     </>
-  )
-}
-
-function FlagForm({ field, vesselId, onDone }: { field: ViewField; vesselId: string; onDone: () => void }) {
-  const [proposedValue, setProposed] = useState("")
-  const [reason, setReason] = useState("")
-  const [source, setSource] = useState("")
-  const [busy, setBusy] = useState(false)
-  const id = `flag-${field.key}`
-  const submit = async () => {
-    setBusy(true)
-    try {
-      const res = await apiFetch(`/api/vessels/${vesselId}/flags`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ field: field.key, proposedValue, reason, source }),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(body.error ?? "The issue could not be recorded.")
-      toast.success("Issue recorded for review. The master is unchanged until the office corrects it.")
-      onDone()
-    } catch (e) {
-      toast.error(e instanceof Error && e.message !== "Failed to fetch" ? e.message : "The server cannot be reached. Try again when connected.")
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <form className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void submit() }}>
-      <p className="text-sm sm:col-span-2">
-        <span className="font-medium">{field.label}</span>: master value <span className="font-mono">{field.display || "—"}</span>
-      </p>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor={`${id}-value`}>Correct value (if known)</Label>
-        <Input id={`${id}-value`} value={proposedValue} onChange={(e) => setProposed(e.target.value)} maxLength={500} />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor={`${id}-source`}>Source (certificate, drawing, document)</Label>
-        <Input id={`${id}-source`} value={source} onChange={(e) => setSource(e.target.value)} maxLength={500} />
-      </div>
-      <div className="flex flex-col gap-1.5 sm:col-span-2">
-        <Label htmlFor={`${id}-reason`}>Why is it wrong or missing? *</Label>
-        <Textarea id={`${id}-reason`} value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} required className="min-h-20" />
-      </div>
-      <div className="flex gap-2 sm:col-span-2">
-        <Button type="submit" disabled={busy || reason.trim().length < 5}>Record issue</Button>
-      </div>
-    </form>
   )
 }
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import useSWR from "swr"
 import { isApproved } from "@/lib/completeness"
-import { createEmptyReport, type Photo, type Report } from "@/lib/form-schema"
+import { createEmptyReport, createNewReport, type Photo, type Report } from "@/lib/form-schema"
 import { deletePhotoLocal, getReport, getSyncState, listPhotos, newId, putPhoto, putReport, setSyncState } from "@/lib/local-db"
 import { apiFetch } from "@/lib/api"
 import {
@@ -50,7 +50,8 @@ async function loadOrCreate(id: string) {
   const cloud = local ? null : await fetchFromCloud(id)
   if (cloud === "locked") throw new Error("Open Inspection Reports from NeraVeda to load this report.")
   const existing = local ?? cloud
-  const report = existing ?? createEmptyReport(id)
+  // A report created here is new: six-group Vessel Master particulars (createEmptyReport is only the defaults for loaded ones).
+  const report = existing ?? createNewReport(id)
   if (!existing) await putReport(report)
   const photos = await listPhotos(id)
   return { report, photos }

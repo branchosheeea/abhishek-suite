@@ -22,6 +22,7 @@ import {
 } from "@/lib/narrative/preamble/options"
 import { issuesFor, validatePreamble, type IssueField } from "@/lib/narrative/preamble/validate"
 import { applyLinkedChange } from "@/lib/linked-fields"
+import { isV2 } from "@/lib/particulars"
 import { NarrativeShell } from "../narrative/narrative-shell"
 import { useNarrativeState } from "../narrative/use-narrative-state"
 import { AttendanceDetailsForm } from "./attendance-details-form"
@@ -104,6 +105,7 @@ export function PreambleBuilder({ report, update, saveNow }: Props) {
     setDetail,
     messages: (field: IssueField) => issuesFor(validation, field),
     disabled: locked,
+    vesselChosenInDetails: isV2(report),
   }
 
   return (

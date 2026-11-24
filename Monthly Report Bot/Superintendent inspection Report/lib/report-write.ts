@@ -17,7 +17,7 @@ import type { Photo, Report } from "./form-schema"
 /** Report sections saved on every request. */
 export const REPORT_SECTIONS = ["details", "particulars", "summary", "scope", "worklist", "deck", "engine", "management", "signoff"] as const
 /** Saved only when the request includes them: a tab running an older version does not send these and must not wipe them. */
-export const OPTIONAL_SECTIONS = ["narratives", "criticalResults"] as const
+export const OPTIONAL_SECTIONS = ["narratives", "criticalResults", "vesselSnapshot"] as const
 
 type Doc = Record<string, unknown>
 
