@@ -39,9 +39,11 @@ WEB_KEYS = ("sir", "evi")
 SERVER_MODULES = {"sir": ("sir", "dd"), "evi": ("evi",)}
 #: Environment variables each web workspace may receive from the protected store (Phase 5).
 DB_VARS = {
-    "sir": ("MONGODB_URI",),
+    "sir": ("MONGODB_URI", "SIR_DNS_SERVERS"),
     "evi": ("EMISSIONS_MONGODB_URI", "EMISSIONS_SOURCE_WRITE_URI", "EMISSIONS_SOURCE_READ_URI", "EMISSIONS_DB", "EMISSIONS_DNS_SERVERS"),
 }
+#: The variable through which a web server receives NeraVeda's DNS servers (access settings) when its own is not set.
+DNS_VARS = {"sir": "SIR_DNS_SERVERS"}
 
 
 class AccessError(RuntimeError):
@@ -459,14 +461,18 @@ class AccessService:
             self._call(key, port, "/api/auth/revoke", "POST")
 
     def db_env(self, key: str) -> dict[str, str]:
-        """Database settings for a web workspace from the protected store, only for people with that workspace."""
+        """Database settings for a web workspace from the protected store, only for people with that workspace.
+        The Inspection Reports server also gets NeraVeda's DNS servers for MongoDB SRV lookups (the office resolver
+        does not answer them) unless its own setting says otherwise."""
         if key not in DB_VARS or not self.allows(key):
             return {}
         raw = read_secret(f"db_{key}")
-        if not raw:
-            return {}
         try:
-            values = json.loads(raw)
+            values = json.loads(raw) if raw else {}
         except ValueError:
-            return {}
-        return {k: str(v) for k, v in values.items() if k in DB_VARS[key] and v}
+            values = {}
+        env = {k: str(v) for k, v in values.items() if k in DB_VARS[key] and v} if isinstance(values, dict) else {}
+        dns_var = DNS_VARS.get(key)
+        if dns_var and dns_var not in env and self.config.dns_servers:
+            env[dns_var] = ",".join(self.config.dns_servers)
+        return env

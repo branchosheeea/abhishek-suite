@@ -1,5 +1,6 @@
 import "server-only"
 import { MongoClient, type Db } from "mongodb"
+import { applyDnsOverride } from "./server/dns-override"
 import { backupRoot, dailyBackup, type BackupSource } from "./server/mongo-backup"
 import { ensureVesselIndexes } from "./vessel-master/repo"
 
@@ -9,6 +10,9 @@ function getClient() {
   const uri = process.env.MONGODB_URI
   if (!uri) throw new Error("MONGODB_URI is not set")
   if (!globalForMongo._mongoClient) {
+    // SIR_DNS_SERVERS (from NeraVeda's access settings or .env.local): the office resolver does not answer the
+    // mongodb+srv SRV lookup, so without it every cloud save fails with "querySrv EBADRESP".
+    applyDnsOverride()
     globalForMongo._mongoClient = new MongoClient(uri, { appName: "sir-inspection" }).connect()
   }
   return globalForMongo._mongoClient

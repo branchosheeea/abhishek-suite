@@ -346,6 +346,19 @@ class SessionTests(TempRuntime):
         self.assertEqual(access.db_env("evi"), {"EMISSIONS_MONGODB_URI": "mongodb://x"})
         self.assertEqual(access.db_env("sir"), {})
 
+    def test_inspection_server_gets_neraveda_dns_servers_unless_its_own_are_set(self):
+        store = MemoryAccessStore([UserAccess("alice@x.com").with_modules(["sir"])])
+        access = self.service(store, config=replace(ENTRA, dns_servers=("8.8.8.8", "1.1.1.1")))
+        access.sign_in()
+        self.assertEqual(access.db_env("sir"), {"SIR_DNS_SERVERS": "8.8.8.8,1.1.1.1"})
+        cfg.save_secret("db_sir", json.dumps({"MONGODB_URI": "mongodb://x", "SIR_DNS_SERVERS": "9.9.9.9"}))
+        self.assertEqual(access.db_env("sir"), {"MONGODB_URI": "mongodb://x", "SIR_DNS_SERVERS": "9.9.9.9"})
+        self.assertEqual(access.db_env("evi"), {}, "only for workspaces the person has")
+        plain = self.service(store)  # no DNS servers configured: nothing added
+        plain.sign_in()
+        cfg.save_secret("db_sir", json.dumps({"MONGODB_URI": "mongodb://x"}))
+        self.assertEqual(plain.db_env("sir"), {"MONGODB_URI": "mongodb://x"})
+
     def test_sign_out_clears_everything(self):
         store = MemoryAccessStore([UserAccess("alice@x.com").with_modules(["oil"])])
         access = self.service(store)
