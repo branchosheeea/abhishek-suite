@@ -59,6 +59,12 @@ This is an offline-first web app for preparing Superintendent's Detailed Inspect
   - **Edit timestamps** now always move forward, so an edit counts as unsent even when this device's clock is behind.
   - **Not yet enforced by the server:** that the report was complete when approved.
   - **Tests:** `tests/approved-reports.test.ts`. Details are in README.md under "Approved reports are protected".
+- Daily backups (24 Nov 2026, audit item P1-1).
+  - **What:** the server backs up the `inspections` database the first time it is used each day, to `%LOCALAPPDATA%\AbhishekAutomationSuite\backups\inspections-daily` on this PC.
+  - **How:** each document is stored once and shared between snapshots; the newest 30 are kept.
+  - **Restoring:** a restore goes only into a new, empty database (`npm run backup`).
+  - **Shared engine:** the same engine backs up Emissions Validation. The NeraVeda launcher backs up the suite database the same way.
+  - **Tests:** `tests/mongo-backup.test.ts`. Details are in README.md under "Daily backups".
 
 ## Running locally
 

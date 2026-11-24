@@ -261,11 +261,32 @@ describe("static guarantees: no source write-back path exists", () => {
     }
   })
 
+  // The daily backup (lib/server/mongo-backup.ts, audit P1-1) is the one exception, checked separately below: it writes
+  // copies of the database into its own backup folder on this PC, never next to or over an original (originals are never
+  // on disk in this app).
+  const BACKUP_ENGINE = join("server", "mongo-backup.ts")
+
   test("no code writes to the file system (reports are streamed, never saved next to originals)", () => {
     for (const p of files) {
+      if (p.endsWith(BACKUP_ENGINE)) continue
       const text = read(p)
       assert.ok(!/\b(writeFile|writeFileSync|appendFile|createWriteStream|renameSync|unlinkSync|rmSync|copyFile)\b/.test(text), `${relative(ROOT, p)} writes files`)
     }
+  })
+
+  test("the daily backup writes only inside its own backup folder, and only reads the database", () => {
+    const engine = read(join(ROOT, "lib", "server", "mongo-backup.ts"))
+    const calls = [...engine.matchAll(/\b(writeFile|writeFileSync|appendFile|createWriteStream|renameSync|unlinkSync|rmSync|copyFile|mkdirSync)\(([^,)]*)/g)]
+    assert.ok(calls.length > 0)
+    // Every path written, renamed or removed is built from the backup destination (dest, or the snapshot and document
+    // paths derived from it).
+    for (const [call, , target] of calls) {
+      assert.match(target.trim(), /^(join\((dest|files|partial)\b|partial$|old$|path$|`\$\{path\}\.tmp`$)/, `unexpected file target: ${call}`)
+    }
+    const runtime = read(join(ROOT, "lib", "server", "runtime.ts"))
+    const source = runtime.slice(runtime.indexOf("export function emissionsBackupSource"), runtime.indexOf("const backupState"))
+    assert.match(source, /\.find\(\{\}\)/)
+    assert.ok(!/\.(insert|update|replace|delete|drop|rename|bulkWrite)\w*\(/.test(source), "the backup source only reads")
   })
 
   test("screenshots are read locally: the OCR model is a local path, never a URL, and no AI/HTTP client is used", () => {

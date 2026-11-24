@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,9 @@ from abhishek_automation_suite import (
 )
 from suite_services import home_intelligence
 from suite_services.access.testing import FakeAccess
+
+# The dashboard starts the daily suite backup; never let a test back up this PC's real data.
+os.environ["NERAVEDA_NO_BACKUP"] = "1"
 
 
 class SuiteLauncherTests(unittest.TestCase):

@@ -453,6 +453,23 @@ The Fleet Manager approves a report by entering a name and date and signing. Fro
 
 Tests: `tests/approved-reports.test.ts`.
 
+### Daily backups
+
+**When:** the first time the server uses the `inspections` database each day, it backs up every collection in the background (`lib/server/mongo-backup.ts`, called from `lib/mongodb.ts`). That covers reports, photos, the audit trail, withdrawn approvals and deleted drafts.
+
+**Where:** `%LOCALAPPDATA%\AbhishekAutomationSuite\backups\inspections-daily`, on this PC.
+
+**How it works:**
+- Each document is stored once, compressed, under its SHA-256. After the first backup, a day adds only what changed.
+- The newest 30 snapshots are kept.
+- A failure is written to the server log and tried again the next day.
+
+**Restoring:** `npm run backup -- list | verify <snapshot> | run | restore <snapshot> <new database name>`. A restore goes only into a new, empty database, never into `inspections` itself. Indexes are recreated by the app on first use.
+
+**Tests:** `tests/mongo-backup.test.ts`. They also check that the Emissions Validation app holds an identical copy of the engine.
+
+The suite-wide backup arrangements are in the main README, under "Backups".
+
 ## Environment variables
 
 | Variable | Required | Description |

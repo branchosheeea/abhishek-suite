@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto"
 import { userInfo } from "node:os"
 import { type Db, MongoClient } from "mongodb"
 import { currentUser } from "./auth"
-import { memoryDiagnostics, mongoDiagnostics } from "./diagnostics"
+import { DIAGNOSTIC_COLLECTIONS, memoryDiagnostics, mongoDiagnostics } from "./diagnostics"
+import { backupRoot, dailyBackup, type BackupSource } from "./mongo-backup"
 import { applyDnsOverride } from "./dns-override"
 import { StorageNotConfigured } from "./errors"
 import type { Services } from "./service"
@@ -83,6 +84,7 @@ export function actor(): string {
 const globalForServices = globalThis as unknown as { _emissionsServices?: Services }
 
 export function getServices(): Services {
+  if (!memoryMode() && configured()) scheduleDailyBackup()
   globalForServices._emissionsServices ??= memoryMode()
     ? { sources: new MemorySourceStore(), db: memoryDiagnostics(), actor, now: () => new Date().toISOString(), id: () => randomUUID() }
     : {
@@ -93,6 +95,33 @@ export function getServices(): Services {
         id: () => randomUUID(),
       }
   return globalForServices._emissionsServices
+}
+
+// ── Daily backup (lib/server/mongo-backup.ts, audit item P1-1) ──────────────
+
+/** The original source files are read with the read-only source role; everything else with the diagnostics role. */
+const BACKUP_SOURCE_NAMES = [SOURCE_COLLECTIONS.artifacts, `${SOURCE_COLLECTIONS.bucket}.files`, `${SOURCE_COLLECTIONS.bucket}.chunks`]
+
+export function emissionsBackupSource(): BackupSource {
+  return {
+    collections: async () => [...BACKUP_SOURCE_NAMES, SOURCE_COLLECTIONS.occurrences, ...Object.values(DIAGNOSTIC_COLLECTIONS)],
+    documents: async function* (name) {
+      const database = await db(BACKUP_SOURCE_NAMES.includes(name) ? "sourceRead" : "diagnostics")()
+      yield* database.collection(name).find({}).sort({ _id: 1 })
+    },
+  }
+}
+
+const backupState = globalThis as unknown as { __emissionsBackupDay?: string }
+
+/** The first time the storage is used each day, in the background. A failure is logged, never shown as lost data. */
+function scheduleDailyBackup() {
+  const today = new Date().toISOString().slice(0, 10)
+  if (backupState.__emissionsBackupDay === today) return
+  backupState.__emissionsBackupDay = today
+  dailyBackup(emissionsBackupSource(), { dest: backupRoot("emissions"), database: dbName() })
+    .then((folder) => folder && console.log(`[emissions] daily backup written: ${folder}`))
+    .catch((error) => console.error("[emissions] daily backup failed:", error))
 }
 
 // ── Storage protection check ────────────────────────────────────────────────

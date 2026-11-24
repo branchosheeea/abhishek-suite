@@ -1,4 +1,5 @@
 """The NeraVeda home screen with sign-in and per-person workspaces (FakeAccess: no Microsoft, no database)."""
+import os
 import json
 import time
 import tkinter as tk
@@ -11,6 +12,9 @@ from suite_services.access import passwords
 from suite_services.access.entitlements import UserAccess
 from suite_services.access.store import MemoryAccessStore
 from suite_services.access.testing import FakeAccess
+
+# The dashboard starts the daily suite backup; never let a test back up this PC's real data.
+os.environ["NERAVEDA_NO_BACKUP"] = "1"
 
 
 def pump(app, until, seconds=5.0):

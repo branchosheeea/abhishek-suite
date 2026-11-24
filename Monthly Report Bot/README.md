@@ -79,6 +79,38 @@ python -m lube_oil --import-folder "C:\path\to\reports"
 
 The shared Suite database and archived originals are stored in `%LOCALAPPDATA%\AbhishekAutomationSuite` by default. Set `ABHISHEK_SUITE_DATA` to use a different local runtime directory.
 
+### Backups
+
+NeraVeda backs up its data once a day by itself, on this PC. It does not use OneDrive.
+
+**Where they go:** `%LOCALAPPDATA%\AbhishekAutomationSuite\backups`, or the folder in `NERAVEDA_BACKUP_DIR` if it is set.
+
+**What is backed up, and when:**
+
+| Data | Backed up | Folder |
+|---|---|---|
+| Suite database (Lub Oil, Guarantee Claims, Critical Jobs, vessel groups) and the archived workbooks | When NeraVeda opens, once a day (`suite_services/backup.py`) | `suite-daily` |
+| Inspection reports, photos, approvals and audit trail (MongoDB `inspections`) | The first time Inspection Reports uses its database each day | `inspections-daily` |
+| Emissions Validation records and original source files (MongoDB `emissions`) | The first time Emissions Validation uses its storage each day | `emissions-daily` |
+| Digital Docking | Its own daily backup, unchanged | `docking\backups` |
+
+**How they work:**
+- Each snapshot is checked when it is taken.
+- Each file or document is stored once and shared between snapshots. After the first backup, a day adds only what changed.
+- The newest 30 snapshots are kept.
+- A backup that was interrupted is never mistaken for a good one.
+- A failure is written to the log and tried again the next day. Nothing stops working.
+
+**Restoring:** a restore goes only into an empty folder or a new database, never over the live data. Check the restored copy, then switch to it deliberately.
+- Suite database:
+  - `python -m suite_services.backup list`
+  - `python -m suite_services.backup verify <snapshot>`
+  - `python -m suite_services.backup restore <snapshot> <empty folder>`
+  - `python -m suite_services.backup run` takes a backup now.
+- MongoDB: in either app folder, run `npm run backup -- list`, `npm run backup -- verify <snapshot>` or `npm run backup -- restore <snapshot> <new database name>`.
+
+**Limit:** these copies are on this PC. They protect against mistakes, bad imports, app faults and loss of the cloud data, but not against losing the laptop itself.
+
 ## Start
 
 Requires Python 3.10+, Microsoft Edge, classic Outlook for Windows, company MariApps access and an authorized Microsoft account. Outlook attachment retrieval uses the signed-in classic Outlook profile through Windows COM.

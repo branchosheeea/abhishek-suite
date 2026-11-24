@@ -123,6 +123,25 @@ tests/               node --test suites (synthetic data only)
 reference/           put the DHT COLT reference files here — excluded from git
 ```
 
+## Daily backups
+
+**When:** the first time the server uses its storage each day, it backs up the `emissions` database in the background (`lib/server/mongo-backup.ts`, called from `lib/server/runtime.ts`). That covers the sessions, runs, findings, statuses, notes, audit and the original source files (GridFS).
+
+**How it reads:** the source files are read with the read-only source role; the rest with the diagnostics role. The backup only reads the database.
+
+**Where:** `%LOCALAPPDATA%\AbhishekAutomationSuite\backups\emissions-daily`, on this PC.
+
+**How it works:**
+- Each document is stored once, compressed, under its SHA-256. After the first backup, a day adds only what changed.
+- The newest 30 snapshots are kept.
+- It is not run in memory mode.
+
+**Restoring:** `npm run backup -- list | verify <snapshot> | restore <snapshot> <new database name>`. A restore goes only into a new, empty database, never the live one, and needs a database user that may create it.
+
+**Original files:** the static test that no code writes files still applies to everything else. The backup engine is the one exception. Its own test checks that it writes only inside its backup folder and only reads the database.
+
+**Copies of the engine:** the engine is an identical copy of `Superintendent inspection Report/lib/server/mongo-backup.ts`. A test there compares the two.
+
 ## Tests
 
 ```

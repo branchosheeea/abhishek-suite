@@ -21,6 +21,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from vessel_report.scroll_input import ScrollRouter
+from suite_services import backup as suite_backup
 from suite_services import emissions_server, home_intelligence, inspection_server
 from suite_services.access.session import AccessDenied, AccessService, PasswordChangeRequired, SessionExpired
 
@@ -348,6 +349,23 @@ class AutomationSuite(ctk.CTk):
         self.render_intelligence()
         self.refresh_intelligence(fetch_sir=True)
         self._schedule_access_refresh()
+        self._start_daily_backup()
+
+    @staticmethod
+    def _start_daily_backup():
+        """Today's backup of the suite database, in the background (suite_services.backup). A failure is logged only:
+        it never stops NeraVeda, and the next start tries again. NERAVEDA_NO_BACKUP=1 turns it off (tests)."""
+        if os.environ.get("NERAVEDA_NO_BACKUP") == "1":
+            return
+
+        def work():
+            try:
+                folder = suite_backup.daily_backup()
+                if folder:
+                    print(f"[backup] suite database backed up to {folder}")
+            except Exception as error:  # noqa: BLE001 - logged, never shown as lost data
+                print(f"[backup] suite database backup failed: {type(error).__name__}: {error}")
+        threading.Thread(target=work, name="suite-backup", daemon=True).start()
 
     def _available_screen(self):
         """The usable screen (without the taskbar) in logical, scaled pixels: the unit window sizes are given in.
