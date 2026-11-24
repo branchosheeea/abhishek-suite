@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { useOnline } from "@/hooks/use-online"
+import { apiFetch } from "@/lib/api"
 import { isApproved } from "@/lib/completeness"
 import { FORM_CODE, createEmptyReport, overallProgress, type Report } from "@/lib/form-schema"
 import {
@@ -67,6 +68,19 @@ export function ReportList() {
   useEffect(() => {
     if (online) void runSync()
   }, [online, runSync])
+
+  // Tell the server how many reports are only on this device, so the NeraVeda Home page can say so (audit P1-7).
+  // Counts only, never report content; offline, it is simply not sent.
+  useEffect(() => {
+    if (!rows || !online) return
+    const status = {
+      reports: rows.length,
+      pending: rows.filter((r) => r.pending).length,
+      conflicts: rows.filter((r) => r.issue === "conflict").length,
+      locked: rows.filter((r) => r.issue === "locked").length,
+    }
+    apiFetch("/api/inspections/device", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(status) }).catch(() => {})
+  }, [rows, online])
 
   const createReport = async (fromId?: string) => {
     const id = newId()

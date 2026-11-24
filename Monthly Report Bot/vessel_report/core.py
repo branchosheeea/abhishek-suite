@@ -1,7 +1,9 @@
 """Date validation and UI-independent batch processing."""
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import hashlib
 from pathlib import Path
+import re
 from threading import Event
 
 DEFAULT_OUTPUT = Path.home() / "Downloads" / "Vessel Report Centre Downloads"
@@ -41,6 +43,50 @@ def unique_path(folder, filename):
         candidate = folder / f"{Path(filename).stem} ({count}){Path(filename).suffix}"
         count += 1
     return candidate
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def existing_copy(folder, filename, sha, size, exclude=()):
+    """A file already in the folder, saved by an earlier run under this name or its numbered copies ("name (2).ext"),
+    with exactly this content; None if there is none (audit P1-4: re-runs used to add " (2)" copies of the same file).
+    exclude: files saved for other job orders in this job, which keep a file each even when the content is the same."""
+    folder, stem, suffix = Path(folder), Path(filename).stem, Path(filename).suffix
+    taken = {str(p) for p in exclude}
+    candidates = [folder / filename, *sorted(folder.glob(f"{glob_escape(stem)} (*){glob_escape(suffix)}"))]
+    for candidate in candidates:
+        if str(candidate) in taken:
+            continue
+        if candidate.is_file() and candidate.stat().st_size == size and file_sha256(candidate) == sha:
+            return candidate
+    return None
+
+
+def glob_escape(text):
+    return re.sub(r"([*?\[])", r"[\1]", text)
+
+
+def history_check(total, page_size, rows_read, more_pages_shown=False):
+    """Whether every Job History row was read (audit P1-4: only the first page used to be read, silently).
+
+    total / page_size: from the portal grid, or None when the grid could not be read. Returns None when complete,
+    otherwise the reason the report must stop before any attachment is downloaded. A history that fits on one page is
+    read as before; the count is checked only when the rows spanned more than one page."""
+    if total is not None:
+        if page_size and total > page_size and rows_read < total:
+            return (f"Job History lists {total} job orders but only {rows_read} could be read. "
+                    "No attachments downloaded, so that none are missed silently; try again.")
+        return None
+    if more_pages_shown:
+        return ("Job History has more than one page and the portal grid could not be read in full. "
+                "No attachments downloaded, so that none are missed silently; narrow the date range or try again.")
+    return None
 
 
 class DownloadError(RuntimeError):

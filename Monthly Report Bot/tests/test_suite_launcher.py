@@ -102,7 +102,9 @@ class SuiteLauncherTests(unittest.TestCase):
                 app.intel = home_intelligence.load_all(Path(empty))
             app.render_intelligence()
             app.update()
-            self.assertEqual(app.tiles["vessel"]["headline"].cget("text"), "Not connected to Home")
+            # Vessel Report Centre now saves its last run for Home (audit P1-7); with none saved yet it says so.
+            self.assertEqual(app.tiles["vessel"]["headline"].cget("text"), "No collection run saved yet")
+            self.assertEqual(app.tiles["voyage"]["headline"].cget("text"), "Not connected to Home")
             self.assertEqual(app.tiles["oil"]["headline"].cget("text"), "Not yet processed")
             self.assertEqual(app.tiles["cjc"]["headline"].cget("text"), "Not yet processed")
             for tile in app.tiles.values():

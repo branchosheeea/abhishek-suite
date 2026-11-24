@@ -231,6 +231,8 @@ export type ImportResult = {
   outcome: "accepted" | "duplicate"
   kind: "initial" | "revision" | "amendment" | "duplicate"
   submissionId: string; dayNo: number; supersededId: string | null
+  /** Replacing a file: job links moved to the same, unchanged row of the new file, and links left on the replaced file. */
+  linksCarried?: number; linksToReview?: number
 }
 
 function recordAttempt(store: Store, a: { dockingId: string | null; sha: string | null; name: string; actor: string; outcome: string; messages: string[]; submissionId?: string | null }) {
@@ -309,14 +311,47 @@ export function importSubmission(store: Store, input: SubmissionInput, actor: st
           linked ? p.slot : null, p.method, p.anchor, p.mediaPart, file?.sha256 ?? "", p.data?.length ?? 0, p.width, p.height, p.format,
           file?.path ?? null, p.status, p.reason)
       })
+      // Job links follow a replaced file (audit P1-6). A link moves to the new file only when it has the same row (sheet
+      // and row reference) with exactly the same text, found once; both moves are in the link history. Any other link
+      // stays on the replaced row, which the job view marks "replaced file", for the Superintendent to link the new row.
+      let linksCarried = 0
+      let linksToReview = 0
+      if (current) {
+        const sameRow = new Map<string, string[]>()
+        for (const a of input.activities) {
+          const key = `${a.sheet}|${a.rowRef}|${a.workText}`
+          sameRow.set(key, [...(sameRow.get(key) ?? []), activityIds.get(`${a.sheet}|${a.rowNo}`)!])
+        }
+        const linked = store.db.prepare(`SELECT a.id, a.sheet, a.row_ref, a.work_text, l.job_id FROM job_links l
+          JOIN activities a ON a.id = l.activity_id WHERE a.submission_id = ? ORDER BY a.sheet, a.row_no`).all(String(current.id)) as Row[]
+        const at = now()
+        const history = store.db.prepare("INSERT INTO job_links_history(activity_id, job_id, action, actor, at, reason) VALUES(?,?,?,?,?,?)")
+        for (const old of linked) {
+          const matches = sameRow.get(`${old.sheet}|${old.row_ref}|${old.work_text}`) ?? []
+          if (matches.length !== 1 || store.db.prepare("SELECT 1 FROM job_links WHERE activity_id = ?").get(matches[0])) {
+            linksToReview++
+            continue
+          }
+          const why = "The day's file was replaced; the same row with the same text is in the new file."
+          store.db.prepare("DELETE FROM job_links WHERE activity_id = ?").run(String(old.id))
+          history.run(String(old.id), String(old.job_id), "unlink", actor, at, `${why} Link moved to the new row.`)
+          store.db.prepare("INSERT INTO job_links(activity_id, job_id, linked_by, linked_at) VALUES(?,?,?,?)").run(matches[0], String(old.job_id), actor, at)
+          history.run(matches[0], String(old.job_id), "link", actor, at, why)
+          linksCarried++
+        }
+      }
+
       const newState = "received"
       if (day.state !== newState) store.db.prepare("UPDATE days SET state = ?, no_report_reason = NULL, updated_at = ? WHERE id = ?").run(newState, now(), day.id)
       const linkedPhotos = input.photos.filter((p) => p.status === "linked").length
       audit(store, actor, `submission.${kind}`, "submission", submissionId, docking.id, current ? { submission: current.id, day_state: day.state } : undefined,
         { day: dayNo, department: input.department, file: name, sha256: sha, activities: input.activities.length, photos_linked: linkedPhotos,
-          photos_rejected: input.photos.length - linkedPhotos, reason })
+          photos_rejected: input.photos.length - linkedPhotos, reason, ...(current ? { links_carried: linksCarried, links_to_review: linksToReview } : {}) })
       recordAttempt(store, { dockingId: docking.id, sha, name, actor, outcome: "accepted", messages: [`${kind}: Day ${dayNo} ${input.department}`], submissionId })
-      return { outcome: "accepted", kind, submissionId, dayNo, supersededId: current ? String(current.id) : null } as ImportResult
+      return {
+        outcome: "accepted", kind, submissionId, dayNo, supersededId: current ? String(current.id) : null,
+        ...(current ? { linksCarried, linksToReview } : {}),
+      } as ImportResult
     })
   } catch (error) {
     // The import rolled back, but the attempt is kept (separate transaction).

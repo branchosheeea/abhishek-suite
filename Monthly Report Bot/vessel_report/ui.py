@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from report_catalog import VESSELS, REPORTS_BY_FREQUENCY, DATE_PRESETS
 from .core import DEFAULT_OUTPUT, BatchRequest, ReportJob, parse_range, preset_range, run_batch
+from .run_summary import build_run_summary, save_run_summary
 from .pickers import VesselPicker, DatePicker
 from .worker import SessionWorker
 from .scroll_input import ScrollRouter
@@ -620,6 +621,12 @@ class ReportApp(ctk.CTk):
                 self.progress_title.configure(text=title)
                 self.progress_detail.configure(text=f"{data['completed']} of {len(self.last_request.jobs)} jobs processed / {data['files']} files saved / {data['failed']} jobs need attention")
                 self.append_log(title)
+                # Keep the run's outcome for the NeraVeda home page (audit P1-7); never stop the window over it.
+                try:
+                    if self.last_request is not None:
+                        save_run_summary(build_run_summary(self.last_request, self.results, data, self.fatal_error))
+                except Exception as error:  # noqa: BLE001 - logged in the window's own log
+                    self.append_log(f"The run summary for the home page could not be saved: {error}")
                 self.activity_tabs.set("Results")
                 if self.fatal_error and not self.results:
                     self.activity_tabs.set("Live log")

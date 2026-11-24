@@ -238,6 +238,19 @@ class GuaranteeClaimManagerTests(unittest.TestCase):
         answered=[*emails,{"direction":"INCOMING","message_datetime":"2026-11-01T08:00:00Z"}]
         self.assertNotIn("NO_RESPONSE",calculate_attention(claim,answered,today="2026-11-14"))
 
+    def test_guarantee_expiry_alert_shows_every_day_until_expiry(self):
+        # Audit P1-5: it used to fire only on the exact days 90, 60, 30 and 14 before expiry.
+        claim={"current_status":"AWAITING_SUPPLY"}
+        vessel={"guarantee_expiry_date":"2027-01-01"}
+        settings={"guarantee_alert_days":[90,60,30,14]}
+        flagged=lambda today:"GUARANTEE_EXPIRY_RISK" in calculate_attention(claim,(),vessel,settings,today=today)
+        self.assertFalse(flagged("2026-10-02"))  # 91 days before
+        self.assertTrue(flagged("2026-10-03"))   # 90 days before
+        self.assertTrue(flagged("2026-11-17"))   # 45 days before: missed before the fix
+        self.assertTrue(flagged("2027-01-01"))   # expiry day
+        self.assertFalse(flagged("2027-01-02"))  # after expiry: no longer "approaching"
+        self.assertTrue("GUARANTEE_EXPIRY_RISK" in calculate_attention(claim,(),vessel,{},today="2026-12-01"),"default window is 90 days")
+
     def test_mail_content_is_sanitized_and_graph_permissions_are_read_only(self):
         self.repo.create_claim(self.impala,"GC-001")
         result=self.repo.import_message({"id":"safe","subject":"DHT Impala GC001 report","body":"<p>Hello</p><script>steal()</script><img src='https://active.invalid/x'>"})

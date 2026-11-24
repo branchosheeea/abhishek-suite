@@ -1,8 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  typescript: {
-    ignoreBuildErrors: true,
-  },
+  // Type errors stop the build (audit P1-8; they were ignored before). If a build fails, NeraVeda's launcher falls
+  // back to `next dev` (suite_services/next_build_and_start.mjs), so the workspace still opens; fix the error and rebuild.
   images: {
     unoptimized: true,
   },

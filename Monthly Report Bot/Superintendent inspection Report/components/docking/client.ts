@@ -69,7 +69,10 @@ export type ImportPlan = {
   needs_reason: boolean
   issued_versions: number
 }
-export type ImportDone = { day_no: number; report_date: string; results: { department: "deck" | "engine"; kind: ImportKind; outcome: string }[]; warnings: string[] }
+export type ImportDone = {
+  day_no: number; report_date: string; warnings: string[]
+  results: { department: "deck" | "engine"; kind: ImportKind; outcome: string; linksCarried?: number; linksToReview?: number }[]
+}
 export const photoUrl = (dockingId: string, photoId: string) => `${API}/${dockingId}/photos/${photoId}`
 export type TimelineEntry = { id: string; day_no: number; report_date: string; department: string; row_ref: string; work_text: string; findings: string; status: string; submission_status: string; photos: { id: string; slot: number }[] }
 

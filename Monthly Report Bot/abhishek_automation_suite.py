@@ -691,6 +691,9 @@ class AutomationSuite(ctk.CTk):
         if item.workspace == "evi":
             self.open_emissions_validation(item.target)
             return
+        if item.workspace == "dd":
+            self.open_digital_docking(item.target)
+            return
         process = getattr(self, PROCESS_ATTR[item.workspace])
         if process is not None and process.poll() is None:
             messagebox.showinfo("Already open", f"{TITLES[item.workspace]} is already open in its own window.",
@@ -869,7 +872,7 @@ class AutomationSuite(ctk.CTk):
         allowed = self.access.allows
 
         def work():
-            note = evi_note = None
+            note = evi_note = dd_note = None
             if fetch_sir:
                 if allowed("sir"):
                     try:
@@ -878,6 +881,14 @@ class AutomationSuite(ctk.CTk):
                             home_intelligence.fetch_inspection_summary(port, headers=self.access.service_headers("sir"))
                     except Exception as error:
                         note = f"Latest summary fetch failed ({type(error).__name__}); showing the previous summary"
+                if allowed("dd"):
+                    # Digital Docking is served by the same web shell server as Inspection Reports.
+                    try:
+                        port = inspection_server.server_port()
+                        if inspection_server.probe(port) == "sir":
+                            home_intelligence.fetch_docking_summary(port, headers=self.access.service_headers("sir"))
+                    except Exception as error:
+                        dd_note = f"Latest summary fetch failed ({type(error).__name__}); showing the previous summary"
                 if allowed("evi"):
                     try:
                         port = emissions_server.server_port()
@@ -890,6 +901,8 @@ class AutomationSuite(ctk.CTk):
                 result["sir"].freshness = note
             if evi_note and result["evi"].state == "ok":
                 result["evi"].freshness = evi_note
+            if dd_note and result["dd"].state == "ok":
+                result["dd"].freshness = dd_note
             self.intel_events.put(result)
 
         threading.Thread(target=work, daemon=True).start()
@@ -1095,6 +1108,7 @@ class AutomationSuite(ctk.CTk):
         else:
             self.launch_button.configure(state="normal", text="Open Vessel Report Centre")
             self._set_running("vessel", False)
+            self.refresh_intelligence()  # it may have saved a new run summary
 
     def check_lub_process(self):
         if self.lub_process is not None and self.lub_process.poll() is None:

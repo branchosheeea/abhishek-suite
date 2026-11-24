@@ -108,7 +108,7 @@ function JobItem({ dockingId, job, notes, onChanged }: { dockingId: string; job:
             <ol className="flex flex-col gap-2 text-sm">
               {data.timeline.map((t) => (
                 <li key={t.id} className="rounded-md border p-2">
-                  <span className="text-xs text-muted-foreground">Day {t.day_no} · {formatDay(t.report_date)} · {t.row_ref}{t.submission_status !== "current" ? " · replaced file" : ""} · {t.photos.length} photo{t.photos.length === 1 ? "" : "s"}</span>
+                  <span className="text-xs text-muted-foreground">Day {t.day_no} · {formatDay(t.report_date)} · {t.row_ref}{t.submission_status !== "current" ? " · replaced file: link the row in the new file" : ""} · {t.photos.length} photo{t.photos.length === 1 ? "" : "s"}</span>
                   <p className="whitespace-pre-wrap">{t.work_text}</p>
                   {t.findings && <p className="text-muted-foreground">Findings: {t.findings}</p>}
                 </li>

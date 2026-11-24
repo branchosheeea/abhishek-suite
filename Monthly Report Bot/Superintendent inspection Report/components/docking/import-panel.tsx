@@ -96,6 +96,16 @@ function ImportForm({ dockingId, day0Date, expected, onClose, onImported, classN
       const done = await upload<ImportDone>(path, form(file, date, { receivedVia: via, correctionReason: reason }))
       const depts = done.results.map((r) => DEPT[r.department]).join(" and ")
       toast.success(`Day ${done.day_no}: ${depts} imported`)
+      // Replacing a file: say what happened to the job links of the replaced rows (audit P1-6).
+      const carried = done.results.reduce((n, r) => n + (r.linksCarried ?? 0), 0)
+      const toReview = done.results.reduce((n, r) => n + (r.linksToReview ?? 0), 0)
+      if (carried) toast.success(`${carried} job link${carried === 1 ? "" : "s"} moved to the same rows of the new file.`)
+      if (toReview) {
+        toast.warning(
+          `${toReview} job link${toReview === 1 ? " stays" : "s stay"} on the replaced file because the row changed. Open the job and link the row in the new file.`,
+          { duration: 12_000 },
+        )
+      }
       onClose()
       await onImported(done)
     } catch (err) {

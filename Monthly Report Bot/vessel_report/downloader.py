@@ -4,12 +4,13 @@ from pathlib import Path
 from threading import get_ident
 from time import monotonic
 from urllib.parse import urlparse
+from uuid import uuid4
 import re
 import json
 import os
 
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
-from .core import DEFAULT_OUTPUT, DownloadError, NoDataError, SessionInterrupted, unique_path
+from .core import DEFAULT_OUTPUT, DownloadError, NoDataError, SessionInterrupted, existing_copy, file_sha256, history_check, unique_path
 
 PROFILE = Path(__file__).parent.parent / "profiles" / "bot_profile"
 PAGE_TIMEOUT_MS = 90_000
@@ -501,13 +502,49 @@ class ReportSession:
         return any(pattern.fullmatch(text)
                    for text in row.locator("td").all_inner_texts())
 
+    # The Job History grid (Kendo), found by its job-order column. Read through the grid's own data source, as Critical
+    # Job Compliance does: a single read of every row has no page boundary to miss rows at (audit P1-4).
+    _HISTORY_GRID = """() => {
+        if (!window.jQuery) return null
+        const visible = (e) => e.offsetParent !== null
+        for (const element of jQuery('.k-grid').toArray().filter(visible)) {
+            const grid = jQuery(element).data('kendoGrid')
+            if (grid && grid.columns && grid.columns.some((c) => c.field === 'jobOrderNo')) return grid
+        }
+        return null
+    }"""
+
+    def _history_grid_info(self, page):
+        try:
+            return page.evaluate(f"() => {{ const g = ({self._HISTORY_GRID})(); "
+                                 f"return g ? {{ total: g.dataSource.total(), pageSize: g.dataSource.pageSize() || 0 }} : null }}")
+        except PlaywrightError:
+            return None
+
+    def _load_all_history(self, page):
+        """Ask the grid for every Job History row at once when they span more than one page. Returns (total, page
+        size), or (None, None) when the grid could not be read (then a visible pager stops the report: core.history_check)."""
+        info = self._history_grid_info(page)
+        if not info:
+            return None, None
+        total, size = int(info.get("total") or 0), int(info.get("pageSize") or 0)
+        if size and total > size:
+            self.log(f"Job History has {total} job orders over several pages of {size}; reading them all.")
+            page.evaluate(f"n => ({self._HISTORY_GRID})().dataSource.pageSize(n)", total)
+            self._idle(page)
+            self._wait(lambda: page.locator('tbody tr:visible td[data-field="jobOrderNo"]').count() >= total,
+                       page, "all Job History rows")
+        return total, size
+
     def _history(self, page, start, end, report):
         page.get_by_text("Job History", exact=True).first.click()
         self._idle(page)
         self._wait(lambda: page.locator('td[data-field="jobEndDate"]:visible').count()
             or page.locator('.k-grid-norecords:visible').count(), page, "Job History rows")
+        total, page_size = self._load_all_history(page)
         matches = []
         excluded = 0
+        read = 0
         rows = page.locator("tbody tr:visible")
         for index in range(rows.count()):
             row = rows.nth(index)
@@ -515,6 +552,7 @@ class ReportSession:
             number_cell = row.locator('td[data-field="jobOrderNo"]').first
             if not date_cell.count() or not number_cell.count():
                 continue
+            read += 1
             number = number_cell.inner_text().strip()
             try:
                 ended = datetime.strptime(date_cell.inner_text().strip(), "%d-%b-%Y")
@@ -525,6 +563,13 @@ class ReportSession:
                     matches.append((ended, number))
                 else:
                     excluded += 1
+        # Grid not readable: an enabled "next/last page" button on a visible pager (older and newer Kendo markup) means
+        # rows may be missing. On a single page every pager button is disabled.
+        pager = ":is(.k-pager-wrap, .k-pager):visible .k-pager-nav:not(.k-state-disabled):not(.k-disabled)"
+        more_pages = bool(page.locator(pager).count()) if total is None else False
+        problem = history_check(total, page_size, read, more_pages)
+        if problem:
+            raise RuntimeError(problem)
         self.log(f"Verified {len(matches)} job orders for {report}; excluded {excluded} unrelated or unverified rows.")
         if excluded and not matches:
             raise RuntimeError(
@@ -563,10 +608,24 @@ class ReportSession:
                 folder = Path("\\\\?\\UNC\\" + absolute[2:] if absolute.startswith("\\\\")
                               else "\\\\?\\" + absolute)
         folder.mkdir(parents=True, exist_ok=True)
-        path = unique_path(folder, filename)
-        download.save_as(path)
-        if not path.is_file() or path.stat().st_size == 0:
-            raise RuntimeError(f"Downloaded file was not saved correctly: {path}")
+        # Saved under a temporary name first: if an earlier run already saved exactly this file here (same content,
+        # same name or a numbered copy of it), that file is used and no " (2)" copy is added (audit P1-4).
+        temporary = folder / f".vrc-download-{uuid4().hex}.part"
+        try:
+            download.save_as(temporary)
+            if not temporary.is_file() or temporary.stat().st_size == 0:
+                raise RuntimeError(f"Downloaded file was not saved correctly: {folder / filename}")
+            earlier = existing_copy(folder, filename, file_sha256(temporary), temporary.stat().st_size,
+                                    exclude=receipts.values())
+            if earlier is not None:
+                receipts[key] = str(earlier)
+                self.log(f"Same file already saved by an earlier run: {earlier}")
+                return str(earlier)
+            path = unique_path(folder, filename)
+            os.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
         # Record before subsequent navigation/callbacks can fail.
         receipts[key] = str(path)
         self.log(f"Saved: {path}")

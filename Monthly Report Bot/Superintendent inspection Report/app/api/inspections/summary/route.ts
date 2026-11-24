@@ -3,6 +3,7 @@ import { CONDITION_SECTIONS, createEmptyReport, overallProgress, type Report } f
 import { getDb } from "@/lib/mongodb"
 import { isFinal } from "@/lib/completeness"
 import { keyFigures } from "@/lib/condition-overview"
+import { deviceStatus } from "@/lib/server/device-status"
 import { route } from "@/lib/server/http"
 
 // Lightweight, read-only summary for the NeraVeda desktop home page.
@@ -58,6 +59,8 @@ export const GET = route({ mutating: false, auth: "user-or-service" }, async () 
       generatedAt: Date.now(),
       reportCount,
       reports,
+      // What the browser last reported about its own copy: reports not in the cloud yet (null until the list is opened).
+      device: deviceStatus(),
     })
   } catch (error) {
     console.error("[inspections:summary]", error)

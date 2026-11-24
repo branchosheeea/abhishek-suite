@@ -10,7 +10,11 @@ the shared database is opened read-only. Exceptions come from each workspace's o
 - Inspection Reports: a summary fetched from the web app's /api/inspections/summary and cached on disk.
 - Emissions Validation: a summary fetched from its web app's /api/summary (latest completed run per session)
   and cached on disk. DNV items are counted as entered; nothing is presented as confirmed by Home.
-- Vessel Report Centre and Voyage Summary save no results the home page can read.
+- Digital Docking: a summary fetched from /api/docking/summary on the web shell's server and cached on disk; each
+  docking's daily reports so far and the days whose report is missing.
+- Vessel Report Centre: the last collection run, saved by the workspace when the run finishes.
+- Inspection Reports also passes on what the browser last said about reports not in the cloud yet.
+- Voyage Summary saves no results the home page can read.
 
 Missing data is never reported as zero or "all clear". Each workspace is loaded independently, so one failure
 leaves the others unaffected.
@@ -147,16 +151,99 @@ def _has(db, table):
 
 # ── Workspaces ────────────────────────────────────────────────────────────────
 
+def _write_cache(path, summary):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False, suffix=".tmp") as handle:
+        json.dump(summary, handle)
+        temporary = handle.name
+    os.replace(temporary, path)
+
+
+# ── Vessel Report Centre (last run, saved by the workspace) ───────────────────
+
+def vessel_report_cache_path(root=None):
+    return Path(root or runtime_root()) / "home" / "vessel_report_summary.json"
+
+
 def vessel_report_intel(root=None, today=None):
-    return Intel("vessel", "not_connected", "Not connected to Home",
-                 "Collection results are kept only while its window is open",
-                 outcome="Collection results are not saved for Home yet")
+    """The last collection run, as vessel_report/run_summary.py saved it when the run finished (audit P1-7)."""
+    path = vessel_report_cache_path(root)
+    if not path.is_file():
+        return Intel("vessel", "not_connected", "No collection run saved yet",
+                     "The next collection run will be shown here when it finishes",
+                     outcome="No collection run saved yet")
+    run = json.loads(path.read_text(encoding="utf-8"))
+    finished = run.get("finishedAt")
+    period = run.get("period") or {}
+    period_text = f"{fmt_iso_day(period.get('from'), today)} to {fmt_iso_day(period.get('to'), today)}" if period.get("from") else ""
+    vessels = run.get("vessels") or []
+    problems = run.get("attention") or []
+    items = [Attention(REVIEW, p.get("vessel") or "Vessel not recorded", f"{p.get('report') or 'Report'} needs attention",
+                       _clip(p.get("error") or "The report could not be collected; see the run's results."), "vessel",
+                       period_text, f"Run {fmt_day(finished, today)}", rank=(0, i))
+             for i, p in enumerate(problems)]
+    if run.get("fatal"):
+        headline, state = "Last run stopped with an error", "failed"
+    else:
+        headline, state = f"Last run: {_plural(run.get('files', 0), 'file')} collected", "ok"
+    context = " · ".join(x for x in (_plural(len(vessels), "vessel"), period_text, run.get("frequency") or "") if x)
+    freshness = f"Run finished {fmt_time(finished, today)}" + (" · stopped before all reports" if run.get("stopped") else "")
+    return Intel("vessel", state, headline, context, freshness,
+                 outcome=f"{run.get('completed', 0)} of {run.get('jobs', 0)} reports processed · {_plural(len(problems), 'report')} need attention",
+                 updated=f"Saved to {run.get('output', '')}", attention=items)
+
+
+# ── Digital Docking (web app summary, cached) ─────────────────────────────────
+
+def docking_cache_path(root=None):
+    return Path(root or runtime_root()) / "home" / "docking_summary.json"
+
+
+def fetch_docking_summary(port, root=None, timeout=15, headers=None):
+    """Read the Digital Docking summary from the web shell's server (it also serves Inspection Reports) while it is
+    running, and cache it with the fetch time."""
+    request = urllib.request.Request(f"http://localhost:{port}/api/docking/summary", headers=headers or {})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        summary = json.loads(response.read().decode("utf-8"))
+    if not isinstance(summary.get("dockings"), list):
+        raise ValueError("Unexpected docking summary format.")
+    summary["fetchedAt"] = datetime.now().isoformat(timespec="seconds")
+    _write_cache(docking_cache_path(root), summary)
+    return summary
 
 
 def docking_intel(root=None, today=None):
-    return Intel("dd", "not_connected", "Not connected to Home",
-                 "Docking records are kept by the web workspace; Home does not read them yet",
-                 outcome="No docking summary for Home yet")
+    """Each docking's daily reports so far, and the days whose report is missing (audit P1-7)."""
+    path = docking_cache_path(root)
+    if not path.is_file():
+        return Intel("dd", "not_connected", "Summary not loaded yet", "Loads while Digital Docking is open",
+                     outcome="Open the workspace to load its summary")
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    fetched = summary.get("fetchedAt")
+    freshness = f"Summary fetched {fmt_time(fetched, today)}"
+    dockings = summary.get("dockings") or []
+    if not dockings:
+        return Intel("dd", "none", "No docking recorded", "Create a docking to follow its daily reports", freshness,
+                     outcome="No docking")
+    items = []
+    for d in dockings:
+        missing = d.get("missingDays") or []
+        if d.get("status") == "active" and missing:
+            shown = ", ".join(str(n) for n in missing[:6]) + ("…" if len(missing) > 6 else "")
+            items.append(Attention(
+                REVIEW, d.get("vessel") or "Vessel not recorded", f"{_plural(len(missing), 'daily report')} not received",
+                f"Day {shown} of {d.get('code')}: no file and no 'no report' reason recorded.", "dd",
+                f"Day 0 {fmt_iso_day(d.get('day0'), today)}", f"Summary fetched {fmt_day(fetched, today)}",
+                rank=(0, -len(missing)), target=f"docking/{d.get('id')}"))
+    current = [d for d in dockings if d.get("status") == "active"] or [d for d in dockings if d.get("status") == "planned"] or dockings
+    latest = max(current, key=lambda d: d.get("day0") or "")
+    so_far = latest.get("daysSoFar") or 0
+    status = {"active": "In dock", "planned": "Planned", "completed": "Completed"}.get(latest.get("status"), latest.get("status") or "")
+    context = (f"{latest.get('code')} · {status} · {latest.get('received', 0)} of {_plural(so_far, 'day')} received, "
+               f"{latest.get('reviewed', 0)} reviewed")
+    return Intel("dd", "ok", f"Latest: {latest.get('vessel')}", context, freshness,
+                 outcome=f"{_plural(latest.get('jobs', 0), 'job')} · latest report {fmt_iso_day(latest.get('latestReportDate'), today) or 'none yet'}",
+                 updated=f"Summary fetched {fmt_day(fetched, today)}", attention=items)
 
 
 def voyage_intel(root=None, today=None):
@@ -393,6 +480,26 @@ def _inspection_day(report):
     return report.get("dateFrom") or report.get("dateTo") or ""
 
 
+def _device_items(summary, today=None):
+    """What the browser last said about its own copy (audit P1-7): reports not in the cloud yet, and reports waiting
+    for a decision (changed elsewhere, or changes refused because the report is approved)."""
+    device = summary.get("device") or {}
+    items = []
+    when = f"As reported by the browser {fmt_time(device.get('at'), today)}" if device.get("at") else ""
+    if device.get("pending"):
+        items.append(Attention(
+            REVIEW, "This PC's browser", f"{_plural(device['pending'], 'report')} only on this device",
+            "Not in the cloud yet, so not in the daily backup either. Open Inspection Reports while online to sync them.",
+            "sir", "", when, rank=(1, 0), target="inspections"))
+    decisions = (device.get("conflicts") or 0) + (device.get("locked") or 0)
+    if decisions:
+        items.append(Attention(
+            REVIEW, "This PC's browser", f"{_plural(decisions, 'report')} waiting for your decision",
+            "Changed on another device, or changed after approval. Open the report to choose what to keep; nothing is synced until then.",
+            "sir", "", when, rank=(1, 1), target="inspections"))
+    return items
+
+
 def sir_intel(root=None, today=None):
     path = sir_cache_path(root)
     if not path.is_file():
@@ -402,10 +509,13 @@ def sir_intel(root=None, today=None):
     summary = json.loads(path.read_text(encoding="utf-8"))
     fetched = summary.get("fetchedAt")
     reports = summary.get("reports") or []
+    device_items = _device_items(summary, today)
     if not reports:
-        return Intel("sir", "none", "No reports synced", "No report has been synced to the cloud",
+        pending = (summary.get("device") or {}).get("pending") or 0
+        return Intel("sir", "none", "No reports synced",
+                     f"{_plural(pending, 'report')} only on this device" if pending else "No report has been synced to the cloud",
                      f"Summary fetched {fmt_time(fetched, today)}",
-                     outcome="No cloud-synced reports", updated=f"Summary fetched {fmt_day(fetched, today)}")
+                     outcome="No cloud-synced reports", updated=f"Summary fetched {fmt_day(fetched, today)}", attention=device_items)
 
     latest = max(reports, key=lambda r: (_inspection_day(r), r.get("updatedAt") or 0))
     vessel = latest.get("vessel") or "Untitled inspection"
@@ -428,6 +538,7 @@ def sir_intel(root=None, today=None):
     # items, and the form has no closure field, so closure is never implied.
     rated = f"{latest.get('ratedCount', 0)} of {latest.get('itemCount', 0)} condition items rated"
     context = f"{'Inspected ' + inspected if inspected else 'Inspection date not entered'} · {status}"
+    items.extend(device_items)
     return Intel("sir", "ok", f"Latest: {vessel}", context,
                  f"Summary fetched {fmt_time(fetched, today)} · finding closure not tracked",
                  outcome=f"{status} · {_plural(open_items, 'item')} rated Action required",

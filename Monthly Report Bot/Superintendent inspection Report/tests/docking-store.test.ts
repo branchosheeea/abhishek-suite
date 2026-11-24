@@ -274,3 +274,70 @@ describe("files, orphans, backup and restore", () => {
     assert.deepEqual(kept, ["2026-01-01T00-00-02-000Z", "2026-01-01T00-00-03-000Z"])
   })
 })
+
+describe("job links follow a replaced file (audit P1-6)", () => {
+  test("a link moves to the same, unchanged row of the new file; a changed row keeps its link on the replaced file", () => {
+    const d = leopard()
+    const first = importSubmission(store, dailyFile(d.id, "2025-10-21", "deck", "a"), SUPT)
+    const [row1, row2] = activitiesOf(first.submissionId)
+    const valves = createJob(store, d.id, { title: "COP discharge valves", department: "deck" }, SUPT)
+    const chain = createJob(store, d.id, { title: "Anchor chain", department: "deck" }, SUPT)
+    linkActivity(store, String(row1.id), valves.id, SUPT)
+    linkActivity(store, String(row2.id), chain.id, SUPT)
+
+    // The corrected file keeps row DK001 word for word and rewrites row DK002.
+    const corrected = dailyFile(d.id, "2025-10-21", "deck", "b", 2, {
+      activities: [
+        { sheet: "Deck Work", rowNo: 6, rowRef: "DK001", workText: "Work 1 (a)", area: "Cargo system", performedBy: "Ship staff" },
+        { sheet: "Deck Work", rowNo: 7, rowRef: "DK002", workText: "Work 2 rewritten by the vessel", area: "Cargo system", performedBy: "Ship staff" },
+      ],
+    })
+    const result = importSubmission(store, corrected, SUPT)
+    assert.equal(result.linksCarried, 1)
+    assert.equal(result.linksToReview, 1)
+
+    const [new1] = activitiesOf(result.submissionId)
+    const valvesTimeline = jobTimeline(store, valves.id)
+    assert.deepEqual(valvesTimeline.map((t) => [t.id, t.submission_status]), [[new1.id, "current"]], "the valves job now shows the new file's row")
+    const chainTimeline = jobTimeline(store, chain.id)
+    assert.deepEqual(chainTimeline.map((t) => [t.id, t.submission_status]), [[row2.id, "superseded"]], "the changed row stays, marked as replaced")
+
+    const moved = store.db.prepare("SELECT activity_id, action FROM job_links_history WHERE job_id = ? ORDER BY id").all(valves.id) as Record<string, unknown>[]
+    assert.deepEqual(moved.map((h) => [h.activity_id, h.action]), [[row1.id, "link"], [row1.id, "unlink"], [new1.id, "link"]])
+    const audit = auditTrail(store, d.id).find((a) => a.action === "submission.revision")
+    assert.equal((audit?.after as { links_carried?: number }).links_carried, 1)
+  })
+
+  test("a first file reports no link counts, and an ambiguous duplicate row is never guessed", () => {
+    const d = leopard()
+    const first = importSubmission(store, dailyFile(d.id, "2025-10-21", "deck", "a"), SUPT)
+    assert.equal(first.linksCarried, undefined)
+    const [row1] = activitiesOf(first.submissionId)
+    const job = createJob(store, d.id, { title: "Hull blasting", department: "deck" }, SUPT)
+    linkActivity(store, String(row1.id), job.id, SUPT)
+    const twice = { sheet: "Deck Work", rowRef: "DK001", workText: "Work 1 (a)", area: "Cargo system", performedBy: "Ship staff" }
+    const result = importSubmission(store, dailyFile(d.id, "2025-10-21", "deck", "b", 2, { activities: [{ ...twice, rowNo: 6 }, { ...twice, rowNo: 7 }] }), SUPT)
+    assert.equal(result.linksCarried, 0)
+    assert.equal(result.linksToReview, 1)
+  })
+})
+
+describe("the summary for the NeraVeda Home page (audit P1-7)", () => {
+  test("counts what each docking received so far and lists past days with no report; cancelled dockings are left out", async () => {
+    const { dockingsSummary } = await import("../lib/docking/server/summary")
+    const d = leopard() // Day 0 = 13 Oct 2025, yard time UTC+8
+    importSubmission(store, dailyFile(d.id, "2025-10-14", "deck"), SUPT)
+    importSubmission(store, dailyFile(d.id, "2025-10-16", "engine"), SUPT)
+    leopard({ code: "JAG-2025-X", vesselName: "DHT JAGUAR", status: "cancelled" })
+    const noon17thAtYard = Date.UTC(2025, 9, 17, 4, 0) // 17 Oct 12:00 at UTC+8
+    const summary = dockingsSummary(store, noon17thAtYard)
+    assert.equal(summary.dockings.length, 1)
+    const s = summary.dockings[0]
+    assert.equal(s.code, "LEO-2025-SS2")
+    assert.equal(s.daysSoFar, 5, "Day 0 to Day 4 (today at the yard)")
+    assert.equal(s.received, 2)
+    // Files for Day 1 (14 Oct) and Day 3 (16 Oct). Today's report (Day 4) may still arrive, so it is not missing yet.
+    assert.deepEqual(s.missingDays, [0, 2])
+    assert.equal(s.latestReportDate, "2025-10-16")
+  })
+})

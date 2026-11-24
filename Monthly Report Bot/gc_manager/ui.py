@@ -125,7 +125,7 @@ class GCApp(ctk.CTk):
             ctk.CTkLabel(form,text=label,text_color=INK).grid(row=i,column=0,sticky="w",padx=14,pady=8)
             var=tk.StringVar(value=str(settings.get(key,5))); self.setting_vars[key]=var
             ctk.CTkEntry(form,textvariable=var,width=100).grid(row=i,column=1,sticky="w",padx=14,pady=8)
-        ctk.CTkLabel(form,text="Guarantee alert days (comma-separated)",text_color=INK).grid(row=len(setting_fields),column=0,sticky="w",padx=14,pady=8)
+        ctk.CTkLabel(form,text="Guarantee alert days (comma-separated; alert daily from the largest until expiry)",text_color=INK).grid(row=len(setting_fields),column=0,sticky="w",padx=14,pady=8)
         self.setting_vars["guarantee_alert_days"]=tk.StringVar(value=", ".join(map(str,settings.get("guarantee_alert_days",[90,60,30,14]))))
         ctk.CTkEntry(form,textvariable=self.setting_vars["guarantee_alert_days"],width=220).grid(row=len(setting_fields),column=1,sticky="w",padx=14,pady=8)
         ctk.CTkLabel(page,text=f"Local user: {settings.get('local_user_name') or 'Not configured'}",text_color=MUTED).pack(anchor="w",pady=(9,3))

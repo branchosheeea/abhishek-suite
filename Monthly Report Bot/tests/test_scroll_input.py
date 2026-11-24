@@ -75,6 +75,9 @@ class ScrollInputTests(unittest.TestCase):
             def reprocess_stale_reports(self):
                 return 0
 
+            def retry_failed_imports(self):
+                return []
+
             def activate_imported(self):
                 return 0
 

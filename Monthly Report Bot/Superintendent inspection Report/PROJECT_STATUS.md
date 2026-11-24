@@ -65,6 +65,12 @@ This is an offline-first web app for preparing Superintendent's Detailed Inspect
   - **Restoring:** a restore goes only into a new, empty database (`npm run backup`).
   - **Shared engine:** the same engine backs up Emissions Validation. The NeraVeda launcher backs up the suite database the same way.
   - **Tests:** `tests/mongo-backup.test.ts`. Details are in README.md under "Daily backups".
+- Audit items P1-6, P1-7 and P1-8 (24 Nov 2026).
+  - **Digital Docking: job links follow a replaced file.** A link moves to the new file's row only when it is the same row (sheet and row reference) with exactly the same text, found once. Both moves are recorded in the link history.
+  - **Links that don't move** stay on the replaced row, which the job view marks "replaced file: link the row in the new file". The import message says how many links moved and how many need re-linking.
+  - **Home sees Digital Docking:** `/api/docking/summary` (`lib/docking/server/summary.ts`) lists each docking's days so far, the files received and reviewed, and the past days with no report.
+  - **Home sees drafts only on this device:** the report list tells the server how many of the browser's reports are not in the cloud yet, or are waiting for a decision (`/api/inspections/device`, kept in memory). `/api/inspections/summary` passes the counts on.
+  - **Type errors now stop the build:** `typescript.ignoreBuildErrors` was removed from `next.config.mjs`. If a build fails, NeraVeda's launcher falls back to `next dev`.
 
 ## Running locally
 
