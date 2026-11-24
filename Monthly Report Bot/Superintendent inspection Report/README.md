@@ -466,7 +466,16 @@ Tests: `tests/approved-reports.test.ts`.
 
 **Restoring:** `npm run backup -- list | verify <snapshot> | run | restore <snapshot> <new database name>`. A restore goes only into a new, empty database, never into `inspections` itself. Indexes are recreated by the app on first use.
 
-**Tests:** `tests/mongo-backup.test.ts`. They also check that the Emissions Validation app holds an identical copy of the engine.
+**Checking a restore:** `npm run backup -- compare <snapshot> <database>` only reads, from both the snapshot and the database. It prints PASS only if:
+- every collection has the same number of documents;
+- every document is identical, field by field and type by type;
+- every photo still belongs to its report, and its image is unchanged;
+- each report's draft or approved status, sign-off and `updatedAt` are preserved;
+- each report's vessel particulars and inspection details are unchanged.
+
+Run it after restoring into a test database, as the recovery test (`lib/server/backup-compare.ts`).
+
+**Tests:** `tests/mongo-backup.test.ts` and `tests/backup-compare.test.ts`. The first also checks that the Emissions Validation app holds an identical copy of the engine.
 
 The suite-wide backup arrangements are in the main README, under "Backups".
 

@@ -5,12 +5,14 @@
 //   npm run backup -- verify <snapshot folder>
 //   npm run backup -- run
 //   npm run backup -- restore <snapshot folder> <new database name>
+//   npm run backup -- compare <snapshot folder> <database>     read-only: PASS only if the database matches the backup
 //
 // Uses MONGODB_URI (from the environment or .env.local). A restore never writes to the live "inspections" database: to
 // use restored data, check it first, then switch the app over deliberately.
 
 import { MongoClient } from "mongodb"
-import { backupDatabase, backupRoot, restoreSnapshot, snapshots, verifySnapshot } from "../lib/server/mongo-backup"
+import { compareInspections, formatComparison, type Collections } from "../lib/server/backup-compare"
+import { backupDatabase, backupRoot, restoreSnapshot, snapshotDocuments, snapshots, verifySnapshot } from "../lib/server/mongo-backup"
 
 const LIVE = "inspections"
 const [command = "list", ...args] = process.argv.slice(2)
@@ -57,8 +59,23 @@ async function main() {
       }),
     )
     console.log(`Restored into the database "${target}" and checked:`, counts)
+  } else if (command === "compare" && args.length === 2) {
+    // Read-only on both sides: the snapshot's files and the named database.
+    const [folder, name] = args
+    const backup: Collections = {}
+    for (const collection of Object.keys(verifySnapshot(folder))) backup[collection] = [...snapshotDocuments(folder, collection)]
+    const restored = await withDb(name, async (db) => {
+      const out: Collections = {}
+      for (const c of await db.listCollections({}, { nameOnly: true }).toArray()) {
+        if (!c.name.startsWith("system.")) out[c.name] = await db.collection(c.name).find({}).toArray()
+      }
+      return out
+    })
+    const result = compareInspections(backup, restored)
+    console.log(formatComparison(result, `Backup ${folder}\ncompared with database "${name}" on ${new Date().toISOString()}`))
+    if (!result.pass) process.exitCode = 1
   } else {
-    console.log("Usage: npm run backup -- list | verify <snapshot> | run | restore <snapshot> <new database name>")
+    console.log("Usage: npm run backup -- list | verify <snapshot> | run | restore <snapshot> <new database name> | compare <snapshot> <database>")
     process.exitCode = 2
   }
 }
