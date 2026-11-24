@@ -6,7 +6,7 @@ import { AppError } from "../../server/errors"
 import type { Store } from "./db"
 import { readStored } from "./files"
 import {
-  addAnnotation, auditTrail, createDocking, createJob, dateOfDay, declareNoReport, DEPARTMENTS, type Department, DockingError,
+  addAnnotation, auditTrail, createDocking, type FleetVessel, createJob, dateOfDay, declareNoReport, DEPARTMENTS, type Department, DockingError,
   type DockingInput, DOCKING_TYPES, getDocking, jobTimeline, linkActivity, listAnnotations, listDays, listDockings, listJobs, markDayReviewed,
   unlinkActivity, updateDocking,
 } from "./repo"
@@ -262,14 +262,14 @@ export function peopleNames(store: Store): Record<string, string> {
 
 // ---------------------------------------------------------------- changes
 
-export function createDockingFrom(store: Store, body: Record<string, unknown>, actor: string) {
-  return call(() => createDocking(store, dockingFields(body, true) as DockingInput, actor))
+export function createDockingFrom(store: Store, body: Record<string, unknown>, actor: string, fleet?: readonly FleetVessel[]) {
+  return call(() => createDocking(store, dockingFields(body, true) as DockingInput, actor, fleet))
 }
 
-export function updateDockingFrom(store: Store, id: string, body: Record<string, unknown>, actor: string) {
+export function updateDockingFrom(store: Store, id: string, body: Record<string, unknown>, actor: string, fleet?: readonly FleetVessel[]) {
   const rev = integer(body, "rev", "Revision")
   if (rev === undefined) throw new AppError(400, "Reload the docking before changing it.")
-  return call(() => updateDocking(store, checkId(id), dockingFields(body, false), rev, actor))
+  return call(() => updateDocking(store, checkId(id), dockingFields(body, false), rev, actor, fleet))
 }
 
 export function dayActionFrom(store: Store, id: string, dayNoText: string, body: Record<string, unknown>, actor: string) {

@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/mongodb"
+import { ANY_MODULE } from "@/lib/server/auth"
 import { json, route } from "@/lib/server/http"
 import { listVessels } from "@/lib/vessel-master/repo"
 import { pickerEntry } from "@/lib/vessel-master/view"
@@ -8,7 +9,8 @@ import { pickerEntry } from "@/lib/vessel-master/view"
 
 export const dynamic = "force-dynamic"
 
-export const GET = route({ mutating: false, limit: ["vessels", 240] }, async () => {
+// Any NeraVeda workspace right (Digital Docking uses the list too) or the launcher's service ticket.
+export const GET = route({ mutating: false, auth: "user-or-service", module: ANY_MODULE, limit: ["vessels", 240] }, async () => {
   const vessels = (await listVessels(await getDb())).map(pickerEntry)
   return json({ vessels, fetchedAt: new Date().toISOString() })
 })

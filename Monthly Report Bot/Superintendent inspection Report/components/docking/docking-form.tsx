@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { useVesselList } from "@/hooks/use-vessel-master"
 import { FLEET_VESSELS } from "@/lib/vessels"
 import { type Docking, formatOffset, OFFSETS, STATUS_LABEL, suggestCode } from "./client"
 
@@ -35,6 +36,10 @@ export function DockingForm({ initial, frozen, submitLabel, onSubmit, onCancel }
   const [codeTouched, setCodeTouched] = useState(Boolean(initial))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  // Vessels from the Vessel Master (saved copy when offline); the fixed fleet list if it cannot be read. The docking's own vessel stays listed.
+  const { list } = useVesselList()
+  const names = list?.data.filter((x) => x.selectable).map((x) => x.name) ?? [...FLEET_VESSELS]
+  const fleet = v.vesselName && !names.includes(v.vesselName) ? [v.vesselName, ...names] : names
   const set = <K extends keyof DockingFormValues>(key: K, value: DockingFormValues[K]) => {
     setV((old) => {
       const next = { ...old, [key]: value }
@@ -61,7 +66,7 @@ export function DockingForm({ initial, frozen, submitLabel, onSubmit, onCancel }
       <Field label="Vessel" id="dd-vessel">
         <select id="dd-vessel" className={SELECT} value={v.vesselName} disabled={frozen} required onChange={(e) => set("vesselName", e.target.value)}>
           <option value="">Choose the vessel…</option>
-          {FLEET_VESSELS.map((name) => <option key={name}>{name}</option>)}
+          {fleet.map((name) => <option key={name}>{name}</option>)}
         </select>
       </Field>
       <Field label="Docking type" id="dd-type">

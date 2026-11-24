@@ -74,9 +74,14 @@ export type Docking = {
   status: string; created_by: string; created_at: string; updated_at: string; rev: number
 }
 
-function validateDocking(input: DockingInput) {
+/** A vessel a docking can be for: its name and the key stored in vessel_id ("DHT_LEOPARD"). */
+export type FleetVessel = { name: string; key: string }
+/** Used when the Vessel Master cannot be read (and by tests): the fixed fleet list. */
+export const DEFAULT_FLEET: readonly FleetVessel[] = FLEET_VESSELS.map((name) => ({ name, key: vesselIdFor(name) }))
+
+function validateDocking(input: DockingInput, fleet: readonly FleetVessel[]): FleetVessel {
   if (!/^[A-Z0-9][A-Z0-9-]{2,23}$/i.test(input.code ?? "")) throw new DockingError("Docking code: 3–24 letters, digits or hyphens, e.g. LEO-2025-SS2.", "code")
-  const vessel = FLEET_VESSELS.find((v) => v.toLowerCase() === (input.vesselName ?? "").trim().toLowerCase())
+  const vessel = fleet.find((v) => v.name.toLowerCase() === (input.vesselName ?? "").trim().toLowerCase())
   if (!vessel) throw new DockingError(`${input.vesselName || "The vessel"} is not in the fleet list.`, "vesselName")
   if (!input.yard?.trim()) throw new DockingError("Enter the yard.", "yard")
   if (!(DOCKING_TYPES as readonly string[]).includes(input.dockingType)) throw new DockingError(`Docking type must be one of: ${DOCKING_TYPES.join(", ")}.`, "dockingType")
@@ -91,16 +96,16 @@ function validateDocking(input: DockingInput) {
   return vessel
 }
 
-export function createDocking(store: Store, input: DockingInput, actor: string): Docking {
+export function createDocking(store: Store, input: DockingInput, actor: string, fleet: readonly FleetVessel[] = DEFAULT_FLEET): Docking {
   requireActor(actor)
-  const vessel = validateDocking(input)
+  const vessel = validateDocking(input, fleet)
   return tx(store.db, () => {
     if (store.db.prepare("SELECT 1 FROM dockings WHERE code = ?").get(input.code)) throw new DockingError(`A docking with code ${input.code} already exists.`, "code")
     const id = randomUUID()
     const stamp = now()
     store.db.prepare(`INSERT INTO dockings(id, code, vessel_id, vessel_name, yard, location, docking_type, utc_offset_minutes, day0_date,
       arrival_time, planned_departure_date, status, created_by, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(id, input.code.toUpperCase(), vesselIdFor(vessel), vessel, input.yard.trim(), (input.location ?? "").trim(), input.dockingType,
+      .run(id, input.code.toUpperCase(), vessel.key, vessel.name, input.yard.trim(), (input.location ?? "").trim(), input.dockingType,
         input.utcOffsetMinutes, input.day0Date, input.arrivalTime ?? null, input.plannedDepartureDate ?? null, input.status ?? "planned", actor, stamp, stamp)
     const created = getDocking(store, id)
     audit(store, actor, "docking.create", "docking", id, id, undefined, created)
@@ -119,7 +124,7 @@ export function listDockings(store: Store): Docking[] {
 }
 
 /** Change docking details. Vessel, code and Day 0 are fixed once a file has been imported (they number the days). */
-export function updateDocking(store: Store, id: string, changes: Partial<DockingInput>, expectedRev: number, actor: string): Docking {
+export function updateDocking(store: Store, id: string, changes: Partial<DockingInput>, expectedRev: number, actor: string, fleet: readonly FleetVessel[] = DEFAULT_FLEET): Docking {
   requireActor(actor)
   return tx(store.db, () => {
     const before = getDocking(store, id)
@@ -132,8 +137,9 @@ export function updateDocking(store: Store, id: string, changes: Partial<Docking
       plannedDepartureDate: changes.plannedDepartureDate !== undefined ? changes.plannedDepartureDate : before.planned_departure_date,
       status: (changes.status ?? before.status) as DockingInput["status"],
     }
-    const vessel = validateDocking(merged)
-    const fixedChanged = merged.code.toUpperCase() !== before.code || vessel !== before.vessel_name || merged.day0Date !== before.day0_date
+    // The docking's own vessel stays valid even if it is no longer offered for new dockings.
+    const vessel = validateDocking(merged, [...fleet, { name: before.vessel_name, key: before.vessel_id }])
+    const fixedChanged = merged.code.toUpperCase() !== before.code || vessel.name !== before.vessel_name || merged.day0Date !== before.day0_date
     if (fixedChanged && store.db.prepare("SELECT 1 FROM submissions WHERE docking_id = ?").get(id)) {
       throw new DockingError("Vessel, code and Day 0 cannot change after daily files have been imported.")
     }
@@ -143,7 +149,7 @@ export function updateDocking(store: Store, id: string, changes: Partial<Docking
     if (!["planned", "active", "completed", "cancelled"].includes(merged.status ?? "")) throw new DockingError("Unknown docking status.", "status")
     store.db.prepare(`UPDATE dockings SET code=?, vessel_id=?, vessel_name=?, yard=?, location=?, docking_type=?, utc_offset_minutes=?,
       day0_date=?, arrival_time=?, planned_departure_date=?, status=?, updated_at=?, rev=rev+1 WHERE id=? AND rev=?`)
-      .run(merged.code.toUpperCase(), vesselIdFor(vessel), vessel, merged.yard.trim(), (merged.location ?? "").trim(), merged.dockingType,
+      .run(merged.code.toUpperCase(), vessel.key, vessel.name, merged.yard.trim(), (merged.location ?? "").trim(), merged.dockingType,
         merged.utcOffsetMinutes, merged.day0Date, merged.arrivalTime ?? null, merged.plannedDepartureDate ?? null, merged.status!, now(), id, expectedRev)
     const after = getDocking(store, id)
     audit(store, actor, "docking.update", "docking", id, id, before, after)
