@@ -160,7 +160,7 @@ describe("a vessel not in the Vessel Master", () => {
 })
 
 describe("PDF, completeness and approved reports", () => {
-  test("the PDF shows units and paired values as one phrase, and section F's basis", async () => {
+  test("the PDF shows units and paired values as one phrase, and section F's basis as its first row", async () => {
     const r = await chosen()
     r.particulars.mcr_kw = "20,000"
     r.vesselSnapshot!.basisLabel = "Reference: shop test"
@@ -171,7 +171,8 @@ describe("PDF, completeness and approved reports", () => {
     assert.equal(E.values.ncr_kw, "17,000 kW @ 57 rpm")
     assert.ok(!E.fields.some((f) => f.key === "mcr_rpm"), "the rpm is part of the MCR row")
     assert.equal(F.values.fuel_laden_mt_day, "55 MT/day @ 14.5 kn")
-    assert.match(F.title, /\(Reference: shop test\)$/)
+    assert.equal(F.title, "F · Guaranteed / Reference Performance")
+    assert.deepEqual([F.fields[0].label, F.values.basis], ["Basis", "Reference: shop test"])
     assert.equal(groups[3].values.loa_m, "330 m")
   })
 

@@ -262,8 +262,13 @@ export function particularsForPdf(report: Report): { title: string; fields: Fiel
       out[f.key] = main && second ? `${main} @ ${second}` : main || (second ? `@ ${second}` : "")
       fields.push({ key: f.key, label: LABEL[f.key] ?? f.label, type: WIDE_KEYS.has(f.key) && f.key !== "main_engine" ? "textarea" : undefined })
     }
-    const basis = SIR_GROUPS[i].id === "F" && report.vesselSnapshot?.basisLabel ? ` (${report.vesselSnapshot.basisLabel})` : ""
-    return { title: `${g.title}${basis}`, fields, values: out }
+    // Section F's basis as its first row (a long label does not fit in the heading).
+    const basis = SIR_GROUPS[i].id === "F" ? report.vesselSnapshot?.basisLabel : null
+    if (basis) {
+      fields.unshift({ key: "basis", label: "Basis" })
+      out.basis = basis
+    }
+    return { title: g.title ?? "", fields, values: out }
   })
 }
 

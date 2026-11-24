@@ -72,6 +72,15 @@ This is an offline-first web app for preparing Superintendent's Detailed Inspect
   - **Home sees drafts only on this device:** the report list tells the server how many of the browser's reports are not in the cloud yet, or are waiting for a decision (`/api/inspections/device`, kept in memory). `/api/inspections/summary` passes the counts on.
   - **Type errors now stop the build:** `typescript.ignoreBuildErrors` was removed from `next.config.mjs`. If a build fails, NeraVeda's launcher falls back to `next dev`.
 
+- Vessel Master (24 Nov 2026).
+  - **What:** one shared record of each vessel's particulars, imported from the Vessel Master workbook into the cloud `inspections` database. Every value has a status (VERIFIED, PROVISIONAL, CONFLICT, MISSING), its source and its history. 24 vessels were imported (23 from the workbook, DHT ORYX kept as a name-only record), after a restore test of the daily backup passed.
+  - **New reports:** the vessel is chosen from the master. The particulars (six groups A–F) are filled in, offered or left empty according to each value's status, and kept as a fixed copy in the report. Refresh compares first. Offline use, "Report issue" and "Verify on board" are included.
+  - **Earlier reports** are unchanged: same four groups, same PDF (checked byte for byte against the previous code).
+  - **Admin:** `npm run vessel-master` (preview, approved import with a backup first, list, show, flags). The review page is `/inspections/vessels`.
+  - **Also fixed:** cloud sync on the office network ("sync failed"). The SIR server now uses NeraVeda's DNS servers for the Atlas lookup.
+  - **Open questions from the plan** (values held back until answered or verified on board): Addax performance (specification H5508 vs hull 5509), Puma MCR (24,400 kW may be the statutory power), Antelope summer DWT (scantling figure).
+  - **Tests:** 54 new (rules 12, import 10, view and flags 11, verification 8, particulars versions 13). Details are in README.md under "Vessel Master".
+
 ## Running locally
 
 From the project directory:

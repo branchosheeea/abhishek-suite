@@ -479,11 +479,62 @@ Run it after restoring into a test database, as the recovery test (`lib/server/b
 
 The suite-wide backup arrangements are in the main README, under "Backups".
 
+### Vessel Master (vessel particulars)
+
+One shared, source-traceable record of each vessel's particulars, in the cloud `inspections` database. It is imported from the Vessel Master workbook (`Vessel Particular/SIR_Vessel_Master_*.xlsx`, never modified). New reports start from it; each report keeps its own fixed copy.
+
+**Status of each value** (`lib/vessel-master/rules.ts`):
+- **VERIFIED** only when the workbook's group status (Registry, Technical or Performance) is VERIFIED **and** a VERIFIED Source_Register row covers the field, or when a Superintendent verified it on board (below).
+- **PROVISIONAL** otherwise. **CONFLICT** when a Data_Quality item blocks it or an open question in the plan holds it (Puma MCR, Antelope summer DWT). **MISSING** when blank (never 0).
+- Orange cells (physical verification) are not released until verified.
+
+**What a new report does with a value:**
+- **Filled in:** VERIFIED values, and PROVISIONAL values of fields that allow it.
+- **Offered:** PROVISIONAL values of "VERIFIED only" fields ("Use this value", recorded with the name).
+- **Left empty, with the reason:** values in conflict or awaiting physical verification.
+- **Master only:** statutory propelling power and the public fleet DWT.
+
+**In the report** (`lib/particulars.ts`, `components/report/particulars-v2.tsx`):
+- Vessel in Inspection Details is a picker of the master's vessels, or "Other vessel (not in the Vessel Master)" typed by hand.
+- Choosing a vessel stores a snapshot in the report (`vesselSnapshot`). Later master changes never alter it. **Refresh from Vessel Master** first lists every difference (this report, the master when captured, the master now, the result) and keeps the Superintendent's own entries.
+- Every value shows where it came from. A mandatory value the Superintendent had to enter is reported to the office once (a correction flag).
+- Offline, the vessel list and records come from a copy saved in the browser (`sir-vessel-master`). With no copy, the particulars are **pending**: they fill in when the report is open online, and approval waits until then.
+- Changing the vessel after the report has content asks first. "New inspection for this vessel" takes fresh particulars from the master; typed particulars are carried over only for a vessel not in the master.
+- **Reports made before the Vessel Master** (no `vesselSnapshot`) keep their four groups and print exactly as before.
+- **A new report prints the six groups A–F**, with units and paired values as one phrase ("18,952 kW @ 58.1 rpm", "56.5 MT/day @ 14.6 kn"). Section F starts with its basis; "Guaranteed" is used only for a contractual basis whose values are VERIFIED. No provisional marking is printed.
+- `vesselSnapshot` is covered by the approved-report lock and the conflict checks.
+
+**Verify on board:** any Superintendent can check a value against a ship's document ("Verify on board" in the report, "Verify" on the Vessel Master page).
+- With the document type and its number (date and note optional), the master value becomes VERIFIED at once, with a new revision and a permanent record (`vessel_master_verifications`).
+- A VERIFIED value can be confirmed but not changed this way, and the vessel name and IMO can only be confirmed: use **Report issue** for the office instead.
+- Later workbook imports keep values verified on board.
+
+**Vessel Master page:** `/inspections/vessels` (button in the report list) shows each vessel's values, statuses and reasons, the workbook's sources and data-quality items, verifications, reported issues and revisions.
+
+**Importing the workbook** (admin, needs the database credentials):
+
+```powershell
+$env:SIR_DNS_SERVERS = "8.8.8.8"                    # office network only
+npm run vessel-master -- check                      # read-only preview; prints a preview hash
+npm run vessel-master -- import --approve <hash>    # backs up inspections, then writes in one transaction
+npm run vessel-master -- list | show <vessel> | flags [<vessel>]
+```
+
+- The import writes only what the reviewed preview showed (the hash covers the workbook and the master). An unchanged workbook writes nothing.
+- A VERIFIED value is never replaced without `--override-verified "<reason>"`.
+- Vessels are matched by workbook Vessel ID, then IMO. NeraVeda's existing names were linked once, on the first import. A vessel NeraVeda knows but the workbook does not list is kept as a name-only record (DHT ORYX, not delivered).
+
+**Collections:** `vessels`, `vessel_master_revisions`, `vessel_master_imports`, `vessel_master_sources`, `vessel_master_issues`, `vessel_master_flags`, `vessel_master_verifications`. They are part of the daily backup.
+
+**Tests:** `tests/vessel-master-rules.test.ts`, `tests/vessel-master-import.test.ts`, `tests/vessel-master-view.test.ts`, `tests/vessel-master-verify.test.ts` and `tests/particulars-versions.test.ts`.
+
 ## Environment variables
 
 | Variable | Required | Description |
 | --- | --- | --- |
 | `MONGODB_URI` | Yes for API sync | MongoDB connection string |
+| `SIR_DNS_SERVERS` | Office network | DNS servers (e.g. `8.8.8.8`) for the `mongodb+srv` lookup. NeraVeda's launcher passes its own setting automatically; set it yourself for `npm run vessel-master` and `npm run backup` |
+| `NEXT_DIST_DIR` | No | Build output folder, to check a build (`.next/verify`) while NeraVeda's server keeps using `.next`. The build adds that folder to `tsconfig.json`: restore it afterwards |
 
 ## Troubleshooting
 
@@ -498,6 +549,7 @@ The suite-wide backup arrangements are in the main README, under "Backups".
 - Ensure `.env.local` exists and contains a valid `MONGODB_URI`
 - Make sure MongoDB is running and reachable
 - Check the terminal output for connection or validation errors
+- "Saved locally, sync failed" with `querySrv EBADRESP` in `diagnostics/superintendent_inspection_server.log`: the network's DNS does not answer the Atlas lookup. NeraVeda passes its DNS servers (access settings) as `SIR_DNS_SERVERS`; restart NeraVeda after changing them.
 
 ### PDF export fails
 
