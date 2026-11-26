@@ -678,6 +678,18 @@ class Repository:
         stamp=now()
         with connection(self.root) as db, db:
             db.execute("INSERT INTO gc_outlook_sync_state(folder_name,delta_link,last_attempt_at,last_success_at,last_error,items_processed,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(folder_name) DO UPDATE SET delta_link=COALESCE(excluded.delta_link,gc_outlook_sync_state.delta_link),last_attempt_at=excluded.last_attempt_at,last_success_at=CASE WHEN excluded.last_error IS NULL THEN excluded.last_success_at ELSE gc_outlook_sync_state.last_success_at END,last_error=excluded.last_error,items_processed=gc_outlook_sync_state.items_processed+excluded.items_processed,updated_at=excluded.updated_at",(folder,delta_link,stamp,stamp if error is None else None,error,count,stamp))
+    def sync_finished(self, result=None):
+        """A sync completed: its finish time and how many emails it added. Only called after a real success."""
+        stamp=now(); added=int((result or {}).get("added") or 0)
+        with connection(self.root) as db, db:
+            db.execute("INSERT INTO gc_outlook_sync_state(folder_name,last_success_at,last_error,items_processed,updated_at) VALUES('sync',?,NULL,?,?) ON CONFLICT(folder_name) DO UPDATE SET last_success_at=excluded.last_success_at,last_error=NULL,items_processed=excluded.items_processed,updated_at=excluded.updated_at",(stamp,added,stamp))
+    def sync_summary(self):
+        """Last attempt, last completed sync, its added count and the last error. Before Phase 5 the completion time
+        was not recorded, so the newest completed folder read stands in for it."""
+        rows=self.sync_status(); run=next((r for r in rows if r["folder_name"]=="sync"),None) or {}
+        folders=[r["last_success_at"] for r in rows if r["folder_name"]!="sync" and r["last_success_at"]]
+        return {"last_attempt_at":run.get("last_attempt_at"),"last_success_at":run.get("last_success_at") or (max(folders) if folders else None),
+                "last_added":run.get("items_processed") if run.get("last_success_at") else None,"last_error":run.get("last_error")}
     def sync_attempt(self, error=None):
         stamp=now()
         with connection(self.root) as db, db:

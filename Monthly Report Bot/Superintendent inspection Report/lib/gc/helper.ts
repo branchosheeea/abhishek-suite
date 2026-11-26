@@ -194,7 +194,9 @@ export function helperOptions(env: Env = process.env): HelperOptions {
   const venv = join(root, ".venv", "Scripts", "python.exe")
   const command = env.NERAVEDA_PYTHON || (existsSync(venv) ? venv : "python")
   // The helper needs the Suite's data folder and Outlook settings, not this server's secrets.
-  const childEnv: Env = { ...env, PYTHONIOENCODING: "utf-8", PYTHONUNBUFFERED: "1" }
+  // GC_AUTO_SYNC: the helper syncs Outlook in the background only under the real NeraVeda web server (it has the web
+  // secret); tests and scripts get no background sync unless they ask for it.
+  const childEnv: Env = { ...env, PYTHONIOENCODING: "utf-8", PYTHONUNBUFFERED: "1", GC_AUTO_SYNC: env.GC_AUTO_SYNC ?? (env.NERAVEDA_WEB_SECRET ? "1" : "0") }
   for (const key of Object.keys(childEnv)) if (key === "NERAVEDA_WEB_SECRET" || /MONGODB|_URI$/i.test(key)) delete childEnv[key]
   return { command, args: ["-m", "gc_manager.service"], cwd: root, env: childEnv }
 }

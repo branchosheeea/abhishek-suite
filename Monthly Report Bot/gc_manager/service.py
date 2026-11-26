@@ -13,6 +13,10 @@ Error kinds: bad_request (unknown command, wrong or extra arguments, malformed l
 refused), not_found, conflict (the claim changed after the person loaded it), unavailable (the GC database could
 not be opened), internal (details go to stderr only).
 
+Outlook sync (Phase 5): when started by the NeraVeda web server with GC_AUTO_SYNC=1, the helper also syncs Outlook
+in the background (gc_manager/sync.py SyncRunner), one sync at a time with the desktop window. sync.state, sync.run
+and sync.sign_in let the page show the true state, start a sync, and show a Microsoft sign-in code.
+
 Changes (Phase 4) all name the signed-in person ("actor", from the web server's session check) and, for a claim,
 the claim's updated_at as the person saw it ("expected_updated_at"), so nobody silently overwrites a newer change.
 
@@ -221,6 +225,41 @@ def _mark_reviewed(repo):
     return {"reviewed": True}
 
 
+_runner = None
+
+
+def _sync_runner(repo, automatic=False):
+    """The helper's one SyncRunner. Its thread uses its own Repository, never the request one."""
+    global _runner
+    if _runner is not None and _runner.root != repo.root:  # another data folder (tests): start afresh
+        _runner.stop()
+        _runner = None
+    if _runner is None:
+        from .repository import Repository
+        from .sync import SyncRunner
+        own = Repository(repo.root)
+        _runner = SyncRunner(lambda: own, automatic=automatic)
+        _runner.root = repo.root
+        _runner.start()
+    return _runner
+
+
+def _sync_state(repo):
+    return _sync_runner(repo).state()
+
+
+def _sync_run(repo, actor):
+    return {**_sync_runner(repo).trigger(), "state": _sync_runner(repo).state()}
+
+
+def _sync_sign_in(repo, actor):
+    try:
+        _sync_runner(repo).start_sign_in()
+    except RuntimeError as error:  # Microsoft could not start a sign-in (network, app settings): say so plainly
+        raise RequestError("unavailable", f"Microsoft sign-in could not start: {str(error)[:300]}") from error
+    return _sync_runner(repo).state()
+
+
 def _args(given, spec):
     """spec: {name: (checker, default)}; a default of ... means required."""
     if not isinstance(given, dict):
@@ -311,6 +350,10 @@ COMMANDS = {
                            "decision": (_choice(("ACCEPTED", "REJECTED")), ...), "reason": (_long_text, "")},
                           _write(web_actions.decide)),
     "review.mark": ({"actor": (_required_text, ...)}, _write(_mark_reviewed)),
+    # Outlook sync (Phase 5): the true state, "Sync now", and a Microsoft device sign-in shown on the page.
+    "sync.state": ({}, _sync_state),
+    "sync.run": ({"actor": (_required_text, ...)}, _sync_run),
+    "sync.sign_in": ({"actor": (_required_text, ...)}, _sync_sign_in),
     "web.claim": ({"claim_id": (_int_id, ...)}, _view(views.claim_detail)),
     "web.correspondence": ({"vessel_id": (_optional_id, None), "search": (_text, ""), "direction": (_direction, None), "offset": (_offset, 0)},
                            _view(views.correspondence)),
@@ -394,6 +437,12 @@ def serve(data_root=None):
         print("[gc-helper] could not open the GC database:", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
     send({"event": "ready", "version": PROTOCOL_VERSION, "available": repo is not None})
+    if repo is not None and os.environ.get("GC_AUTO_SYNC") == "1":
+        try:
+            _sync_runner(repo, automatic=True)  # background Outlook sync while this web server runs
+        except Exception:
+            print("[gc-helper] background Outlook sync could not start:", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
     for line in _read_lines(requests):
         if line is None:
             send({"id": None, "ok": False, "error": {"kind": "bad_request", "message": "Request is too large."}})

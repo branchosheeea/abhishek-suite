@@ -381,6 +381,7 @@ def _sync(repo):
         "last_attempt_at": run["last_attempt_at"] if run else None, "last_error": run["last_error"] if run else None,
         "last_folder_read_at": max((r["last_success_at"] for r in folders if r["last_success_at"]), default=None),
         "folders": len(folders), "folders_with_errors": sum(1 for r in folders if r["last_error"]),
+        "last_success_at": repo.sync_summary()["last_success_at"],
     }
 
 

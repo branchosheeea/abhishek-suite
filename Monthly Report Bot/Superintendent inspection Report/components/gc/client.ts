@@ -10,7 +10,14 @@ export type Vessel = { id: number; name: string; claims: number }
 export type Scope = { vessels: Vessel[]; tracked: string[]; all_vessels: boolean }
 export type Sync = {
   enabled: boolean; configured: boolean; last_attempt_at: string | null; last_error: string | null
-  last_folder_read_at: string | null; folders: number; folders_with_errors: number
+  last_folder_read_at: string | null; folders: number; folders_with_errors: number; last_success_at: string | null
+}
+/** The live Outlook sync state from the helper (Phase 5). */
+export type SyncState = {
+  enabled: boolean; configured: boolean; automatic: boolean; interval_minutes: number; running: boolean; running_here: boolean
+  last_attempt_at: string | null; last_success_at: string | null; last_added: number | null; last_error: string | null
+  sign_in_needed: boolean; next_in_seconds: number | null
+  sign_in: { state: "WAITING" | "DONE" | "FAILED" | "EXPIRED"; user_code: string | null; verification_uri: string; expires_in: number; error: string | null } | null
 }
 export type Overview = {
   today: string; scope: Scope; vessel: Vessel | null; sync: Sync

@@ -129,6 +129,15 @@ describe("starting the real Python helper", () => {
     assert.equal(options.env!.PYTHONIOENCODING, "utf-8")
   })
 
+  test("background Outlook sync only under the real NeraVeda web server, never in tests or scripts", () => {
+    assert.equal(helperOptions({ NERAVEDA_PROJECT_ROOT: PROJECT, NERAVEDA_WEB_SECRET: "ab".repeat(32) }).env!.GC_AUTO_SYNC, "1")
+    assert.equal(helperOptions({ NERAVEDA_PROJECT_ROOT: PROJECT }).env!.GC_AUTO_SYNC, "0")
+    assert.equal(helperOptions({ NERAVEDA_PROJECT_ROOT: PROJECT, NERAVEDA_WEB_SECRET: "ab".repeat(32), GC_AUTO_SYNC: "0" }).env!.GC_AUTO_SYNC, "0")
+    const hook = readFileSync(join(ROOT, "instrumentation.ts"), "utf8")
+    assert.match(hook, /NEXT_RUNTIME !== "nodejs" \|\| !process\.env\.NERAVEDA_WEB_SECRET/, "starts only on the real server")
+    assert.match(hook, /\.catch\(/, "a helper that cannot start must not stop the web server")
+  })
+
   test("a folder without gc_manager is refused", () => {
     assert.throws(() => helperOptions({ NERAVEDA_PROJECT_ROOT: dir }), (e: unknown) => e instanceof AppError && e.status === 503)
   })

@@ -489,13 +489,18 @@ class GCApp(ctk.CTk):
         settings=self.repo.settings()
         if not settings.get("graph_enabled") or not settings.get("graph_configured"):
             messagebox.showinfo("Outlook Not Configured","Set GC_GRAPH_ENABLED=true, AZURE_CLIENT_ID and AZURE_TENANT_ID to use read-only Microsoft Graph. You can import a local mock JSON fixture now.",parent=self);return
+        from .sync import SyncBusy, is_running, run_sync
+        if is_running(self.repo.root):  # the NeraVeda web helper (or another window) is syncing: one sync at a time
+            if not automatic: messagebox.showinfo("Outlook sync","An Outlook sync is already running (NeraVeda web). Try again in a minute.",parent=self)
+            return
         self.repo.sync_attempt();self._begin("Syncing with Outlook")
         def work():
             try:
                 token_path=self.repo.root/"credentials"/"gc_msal_cache.bin"
                 adapter=ReadOnlyGraphAdapter(os.getenv("AZURE_CLIENT_ID"),os.getenv("AZURE_TENANT_ID"),token_path)
-                counts=adapter.sync(self.repo,lambda message:self._device_prompt(message),interactive=not automatic);self.events.put(("auto_sync" if automatic else "sync_ok",counts))
-            except Exception as e:self.repo.sync_attempt(str(e));self.events.put(("auto_sync" if automatic else "sync_error",str(e)))
+                counts=run_sync(self.repo,adapter,prompt=lambda message:self._device_prompt(message),interactive=not automatic);self.events.put(("auto_sync" if automatic else "sync_ok",counts))
+            except SyncBusy as e:self.events.put(("auto_sync" if automatic else "sync_error",str(e)))
+            except Exception as e:self.events.put(("auto_sync" if automatic else "sync_error",str(e)))
         threading.Thread(target=work,daemon=True).start()
 
     def _device_prompt(self,message):
@@ -504,7 +509,10 @@ class GCApp(ctk.CTk):
         self.after(0,show);done.wait()
     def _automatic_sync(self):
         settings=self.repo.settings()
-        if settings.get("graph_enabled") and settings.get("graph_configured") and not self.syncing:self.sync_now(automatic=True)
+        from .sync import recently_synced
+        interval_minutes=max(1,int(settings.get("graph_sync_interval_minutes",5)))
+        # The NeraVeda web helper also syncs on this schedule; skip when any program synced within the interval.
+        if settings.get("graph_enabled") and settings.get("graph_configured") and not self.syncing and not recently_synced(self.repo,interval_minutes):self.sync_now(automatic=True)
         interval=max(1,int(settings.get("graph_sync_interval_minutes",5)))*60000;self._sync_after=self.after(interval,self._automatic_sync)
     def _poll_events(self):
         while not self.events.empty():

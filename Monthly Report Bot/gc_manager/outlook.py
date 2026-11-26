@@ -210,6 +210,19 @@ class ReadOnlyGraphAdapter:
         if "access_token" not in result: raise RuntimeError(result.get("error_description") or "Microsoft sign-in did not return an access token.")
         return result["access_token"]
 
+    def begin_device_sign_in(self):
+        """Start a Microsoft device sign-in (same app, same read-only scopes). Returns the flow with the user code."""
+        flow=self._load_app().initiate_device_flow(scopes=list(self.api_scopes))
+        if "user_code" not in flow: raise RuntimeError("Could not start Microsoft device sign-in.")
+        return flow
+
+    def finish_device_sign_in(self, flow):
+        """Wait for the person to complete the sign-in, then keep the token in the encrypted local cache."""
+        app=self._load_app()
+        result=app.acquire_token_by_device_flow(flow)
+        self._save_cache(app)
+        if "access_token" not in result: raise RuntimeError(result.get("error_description") or "Microsoft sign-in did not complete.")
+
     @staticmethod
     def _request(url, token):
         request=urllib.request.Request(url,headers={"Authorization":f"Bearer {token}","Accept":"application/json",**ReadOnlyGraphAdapter.headers})

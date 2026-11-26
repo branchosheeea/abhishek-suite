@@ -5,7 +5,7 @@
 // The vessel is in the address (?vessel=<id>) so every section and link keeps it; without it the first tracked
 // vessel with claims is used (gc_manager/views.py scope).
 
-import { CloudOff, Mail, Search, TriangleAlert } from "lucide-react"
+import { Search } from "lucide-react"
 import Link from "next/link"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react"
@@ -14,7 +14,8 @@ import { ModuleBadge } from "@/components/shell/app-shell"
 import { WEB_MODULES } from "@/lib/modules"
 import { cn } from "@/lib/utils"
 import { ClaimInspector } from "./claim-inspector"
-import { API, formatStamp, getJson, type Overview, query, type Sync } from "./client"
+import { API, getJson, type Overview, query } from "./client"
+import { OutlookSync } from "./outlook-sync"
 import { SearchDialog } from "./search-dialog"
 import { Skeleton } from "./states"
 
@@ -82,7 +83,7 @@ export function GcFrame({ children }: { children: ReactNode }) {
   return (
     <FrameContext.Provider value={{ vesselParam, overview: data, error, isLoading, refresh: mutate, inspect, inspecting }}>
       <main className={cn("mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-7 sm:px-8", inspecting !== null && "min-[1500px]:pr-[480px]")}>
-        <Header overview={data} loading={isLoading} onSearch={() => setSearching(true)} />
+        <Header overview={data} loading={isLoading} onSearch={() => setSearching(true)} onSynced={() => void mutate()} />
         <Sections reviewCount={data?.reviews?.open} />
         {children}
       </main>
@@ -98,7 +99,7 @@ export function GcFrame({ children }: { children: ReactNode }) {
   )
 }
 
-function Header({ overview, loading, onSearch }: { overview: Overview | undefined; loading: boolean; onSearch: () => void }) {
+function Header({ overview, loading, onSearch, onSynced }: { overview: Overview | undefined; loading: boolean; onSearch: () => void; onSynced: () => void }) {
   const router = useRouter()
   const pathname = usePathname()
   const vessels = overview?.scope.vessels ?? []
@@ -142,43 +143,9 @@ function Header({ overview, loading, onSearch }: { overview: Overview | undefine
           <span className="flex-1 text-left">Search claims and emails</span>
           <kbd className="rounded border bg-muted px-1.5 text-[11px] font-medium">Ctrl K</kbd>
         </button>
-        {overview && <SyncState sync={overview.sync} />}
+        <OutlookSync onSynced={onSynced} />
       </div>
     </header>
-  )
-}
-
-/** Only what the records show: when a sync last started, when a mailbox folder was last read, the last error. */
-function SyncState({ sync }: { sync: Sync }) {
-  if (!sync.enabled || !sync.configured) {
-    return (
-      <p className="flex items-center gap-2 text-sm text-muted-foreground">
-        <CloudOff className="size-4" aria-hidden /> Outlook is not connected on this PC
-      </p>
-    )
-  }
-  if (sync.last_error) {
-    return (
-      <div className="flex max-w-md items-start gap-2 rounded-lg border border-warning/50 bg-warning/10 px-3 py-2 text-sm">
-        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning-foreground dark:text-warning" aria-hidden />
-        <div>
-          <p className="font-semibold">Correspondence sync interrupted</p>
-          <p className="text-xs text-muted-foreground">
-            {sync.last_attempt_at ? `Last attempt ${formatStamp(sync.last_attempt_at)}. ` : ""}
-            {sync.last_folder_read_at ? `A mailbox folder was last read ${formatStamp(sync.last_folder_read_at)}. ` : ""}
-            Newer emails may not be shown yet.
-          </p>
-          <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground" title={sync.last_error}>{sync.last_error}</p>
-        </div>
-      </div>
-    )
-  }
-  return (
-    <p className="flex flex-col items-end text-right text-xs text-muted-foreground">
-      <span className="flex items-center gap-1.5 text-sm text-foreground"><Mail className="size-4" aria-hidden /> Outlook (read-only)</span>
-      <span>{sync.last_attempt_at ? `Last sync started ${formatStamp(sync.last_attempt_at)}` : "No sync has run yet"}</span>
-      {sync.last_folder_read_at && <span>Last folder read {formatStamp(sync.last_folder_read_at)}</span>}
-    </p>
   )
 }
 
