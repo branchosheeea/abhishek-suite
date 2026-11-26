@@ -34,9 +34,10 @@ FREE_ATTEMPTS, FIRST_LOCK_SECONDS, MAX_LOCK_SECONDS, ATTEMPT_WINDOW_SECONDS = 5,
 
 SESSION_PURPOSE = "session"
 WEB_KEYS = ("sir", "evi")
-#: Workspaces served by each web server: its tickets carry the person's rights to all of them (Digital Docking
-#: runs in the same web shell as the Inspection Reports, key "sir"). Each page and API route checks its own.
-SERVER_MODULES = {"sir": ("sir", "dd"), "evi": ("evi",)}
+#: Workspaces served by each web server: its tickets carry the person's rights to all of them (Digital Docking and
+#: the Guarantee Claim Manager run in the same web shell as the Inspection Reports, key "sir"). Each page and API
+#: route checks its own.
+SERVER_MODULES = {"sir": ("sir", "dd", "gc"), "evi": ("evi",)}
 #: Environment variables each web workspace may receive from the protected store (Phase 5).
 DB_VARS = {
     "sir": ("MONGODB_URI", "SIR_DNS_SERVERS"),

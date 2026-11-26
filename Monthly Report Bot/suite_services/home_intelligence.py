@@ -5,7 +5,7 @@ MariApps, Outlook or vessels, never re-parses source files, and never writes to 
 the shared database is opened read-only. Exceptions come from each workspace's own rules:
 
 - Lub Oil Review: lube_oil.analytics.decision_brief on each vessel's latest sheet in use.
-- Guarantee Claims: gc_manager.attention.calculate_attention on the saved claim register.
+- Guarantee Claims: gc_manager.command.assess (the same claim rules as the web Command Centre) on the saved register.
 - Critical Jobs: saved extraction runs (cjc_runs). Compliance assessments are not saved yet.
 - Inspection Reports: a summary fetched from the web app's /api/inspections/summary and cached on disk.
 - Emissions Validation: a summary fetched from its web app's /api/summary (latest completed run per session)
@@ -42,13 +42,6 @@ NAMES = {
 ACTION, REVIEW = "action", "review"
 SEVERITY_LABEL = {ACTION: "Action required", REVIEW: "Review required"}
 
-# Display wording for Guarantee Claim Manager attention flags (the rules live in gc_manager.attention).
-GC_FLAG_TEXT = {
-    "OVERDUE": "Follow-up overdue", "NO_RESPONSE": "No response received", "DELIVERY_OVERDUE": "Delivery overdue",
-    "FOLLOW_UP_DUE": "Follow-up due today", "NEW_EMAIL": "New email not reviewed",
-    "GUARANTEE_EXPIRY_RISK": "Guarantee expiry approaching", "CLOSURE_PENDING": "Closure pending verification",
-}
-GC_ACTION_FLAGS = {"OVERDUE", "DELIVERY_OVERDUE"}  # the flags the GC workspace itself shows in red
 
 
 @dataclass
@@ -335,7 +328,8 @@ def _lube_failure_items(failures, today):
 
 
 def gc_intel(root, today=None):
-    from gc_manager.attention import calculate_attention  # the module's own follow-up rules
+    from gc_manager import command  # the shared claim rules (Command Centre, Register, Inspector and Home)
+    from gc_manager.repository import tracked_ids, tracked_sql
 
     today = today or date.today()
     db = _open(root)
@@ -349,42 +343,40 @@ def gc_intel(root, today=None):
                       (SELECT h.changed_at FROM gc_status_history h WHERE h.claim_id = c.id ORDER BY h.id DESC LIMIT 1) AS last_status_change
                FROM gc_claims c JOIN vessels v ON v.id = c.vessel_id""")]
         vessels = {r["vessel_id"]: dict(r) for r in db.execute("SELECT * FROM gc_vessel_details")}
+        snoozes = ({r[0]: r[1] for r in db.execute("SELECT claim_id, MAX(snoozed_until) FROM gc_snoozes WHERE cleared_at IS NULL GROUP BY claim_id")}
+                   if _has(db, "gc_snoozes") else {})
         updated = db.execute(
             "SELECT MAX(t) FROM (SELECT MAX(updated_at) t FROM gc_claims UNION ALL SELECT MAX(changed_at) FROM gc_status_history)").fetchone()[0]
         imported = db.execute("SELECT MAX(imported_at) FROM gc_emails").fetchone()[0]
+        tracked = tracked_ids(settings.get("tracked_vessels"), db.execute("SELECT id, name FROM vessels").fetchall())
         open_reviews = db.execute(
-            "SELECT review_type, COUNT(*) n FROM gc_review_queue WHERE status = 'OPEN' GROUP BY review_type").fetchall()
-        items = []
-        for claim in claims:
-            emails = [dict(r) for r in db.execute(
-                "SELECT DISTINCT e.* FROM gc_emails e LEFT JOIN gc_email_claim_links l ON l.email_id = e.id "
-                "WHERE e.claim_id = ? OR l.claim_id = ?", (claim["id"], claim["id"]))]
-            flags = calculate_attention(claim, emails, vessels.get(claim["vessel_id"], {}), settings, today.isoformat())
-            if not flags:
-                continue
-            outgoing = max((e["message_datetime"] for e in emails
-                            if e.get("direction") == "OUTGOING" and e.get("message_datetime")), default=None)
-            reasons = {
-                "NO_RESPONSE": (f"No reply since the outgoing email of {fmt_day(outgoing, today)}"
-                                if outgoing else "No reply to the last outgoing email"),
-                "OVERDUE": f"Follow-up was due {fmt_iso_day(claim.get('next_follow_up_date'), today)}",
-                "FOLLOW_UP_DUE": "Follow-up date is today",
-                "DELIVERY_OVERDUE": "Promised dispatch or expected delivery date has passed",
-            }
-            reason = reasons.get(flags[0], GC_FLAG_TEXT.get(flags[0], flags[0]))
-            if len(flags) > 1:
-                reason += "; also " + ", ".join(GC_FLAG_TEXT.get(f, f).lower() for f in flags[1:])
-            title = (claim.get("title") or claim.get("equipment_system") or "").strip()
-            action = bool(GC_ACTION_FLAGS & set(flags))
-            items.append(Attention(
-                ACTION if action else REVIEW, claim["vessel_name"],
-                f"{claim['gc_number']}{' · ' + title if title else ''}: {GC_FLAG_TEXT.get(flags[0], flags[0])}",
-                _clip(reason), "gc", f"Register as of {fmt_day(updated, today)}", f"Rules applied {fmt_day(today, today)}",
-                rank=(0 if action else 1, claim.get("next_follow_up_date") or "9999", claim["gc_number"])))
+            "SELECT review_type, COUNT(*) n FROM gc_review_queue WHERE status = 'OPEN' "
+            f"AND {tracked_sql('suggested_vessel_id', tracked)} GROUP BY review_type").fetchall()
     finally:
         db.close()
 
-    flagged = len(items)
+    items, not_set_up = [], {}
+    for claim in claims:
+        result = command.assess(claim, settings=settings, vessel=vessels.get(claim["vessel_id"], {}), today=today,
+                                snoozed_until=snoozes.get(claim["id"]))
+        verified = [r for r in result.reasons if r.category in (command.ACTION, command.FOLLOW_UP)]
+        if not verified:
+            if any(r.code == "RECORD_INCOMPLETE" for r in result.reasons):
+                not_set_up[claim["vessel_name"]] = not_set_up.get(claim["vessel_name"], 0) + 1
+            continue
+        title = (claim.get("title") or claim.get("equipment_system") or "").strip()
+        action = result.klass <= 2 or any(r.code in command.OVERDUE_CODES for r in verified)
+        items.append(Attention(
+            ACTION if action else REVIEW, claim["vessel_name"],
+            f"{claim['gc_number']}{' · ' + title if title else ''}: {command.REASON_LABEL.get(verified[0].code, verified[0].code)}",
+            _clip(" ".join(r.text for r in verified)), "gc", f"Register as of {fmt_day(updated, today)}", f"Rules applied {fmt_day(today, today)}",
+            rank=(0 if action else 1, *result.rank)))
+    for vessel_name, count in sorted(not_set_up.items()):
+        items.append(Attention(
+            REVIEW, vessel_name, f"{_plural(count, 'claim')} not set up yet",
+            "No verified action owner or next required action is recorded; use the guided set-up in Guarantee Claims",
+            "gc", f"Register as of {fmt_day(updated, today)}", f"Rules applied {fmt_day(today, today)}", rank=(3,)))
+    flagged = len(items) - len(not_set_up)
     review_total = sum(r["n"] for r in open_reviews)
     if review_total:
         ambiguous = all(r["review_type"] == "AMBIGUOUS_VESSEL" for r in open_reviews)

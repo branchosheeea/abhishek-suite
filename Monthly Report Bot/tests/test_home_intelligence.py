@@ -83,22 +83,24 @@ class HomeIntelligenceTests(unittest.TestCase):
 
     # ── Guarantee Claims ────────────────────────────────────────────────────
 
-    def test_gc_items_come_from_the_module_attention_rules(self):
+    def test_gc_items_come_from_the_shared_claim_rules(self):
         repository = ClaimRepository(self.root)
         vessels = {v["name"].casefold(): v["id"] for v in repository.vessels()}
         overdue = repository.create_claim(vessels["dht impala"], "GC-014", title="ME fuel pump")
         repository.update_claim(overdue, next_follow_up_date="2026-11-10")
-        repository.create_claim(vessels["dht leopard"], "GC-015", title="Steering pump")  # no flags
+        repository.create_claim(vessels["dht leopard"], "GC-015", title="Steering pump")  # nothing due, not set up
 
         intel = home.gc_intel(self.root, TODAY)
         self.assertEqual(intel.headline, "2 open claims")
         self.assertEqual(intel.outcome, "1 claim flagged by follow-up rules")
         [item] = [i for i in intel.attention if i.workspace == "gc" and i.vessel == "DHT IMPALA"]
-        self.assertEqual(item.severity, home.ACTION)  # OVERDUE is red in the GC workspace too
+        self.assertEqual(item.severity, home.ACTION)  # an overdue follow-up is red, as in the Command Centre
         self.assertIn("GC-014", item.issue)
         self.assertIn("Follow-up overdue", item.issue)
         self.assertIn("10 Nov", item.reason)
-        self.assertFalse(any(i.vessel == "DHT LEOPARD" for i in intel.attention))
+        # A claim with nothing due is not flagged; it appears only in the one "not set up" line for its vessel.
+        [leopard] = [i for i in intel.attention if i.vessel == "DHT LEOPARD"]
+        self.assertEqual((leopard.severity, leopard.issue), (home.REVIEW, "1 claim not set up yet"))
 
     # ── Critical Jobs ───────────────────────────────────────────────────────
 

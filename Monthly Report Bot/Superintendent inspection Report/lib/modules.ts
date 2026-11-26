@@ -44,6 +44,19 @@ export const WEB_MODULES: WebModule[] = [
     accent: "#5B4A9E",
     tint: "#EEEBF8",
   },
+  {
+    id: "claims",
+    right: "gc",
+    href: "/claims",
+    title: "Guarantee Claim Manager",
+    navLabel: "Guarantee Claims",
+    badge: "GCM",
+    eyebrow: "CLAIM TRACKING · WORKSPACE 04",
+    description: "Guarantee claims, who holds each action and the correspondence behind them. Read from the claim records; nothing closes by itself.",
+    cta: "Open Guarantee Claims",
+    accent: "#A86B10",
+    tint: "#FCF3E2",
+  },
 ]
 
 /** The workspaces this person may use (all of them when the session is not known, e.g. offline). */

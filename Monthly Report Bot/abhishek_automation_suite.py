@@ -725,6 +725,14 @@ class AutomationSuite(ctk.CTk):
         self._oil_card, self.oil_button = cards["oil"]
         self._voyage_card, self.voyage_button = cards["voyage"]
         self._gc_card, self.gc_button = cards["gc"]
+        # The new Guarantee Claim Command Centre lives in the web shell; the desktop window stays until it is retired.
+        self.gc_web_button = ctk.CTkButton(
+            self._gc_card.foot, text="Command Centre (web)", command=self.open_gc_web,
+            fg_color="#E9F5F2", hover_color="#DDEFEA", text_color="#0C796F", text_color_disabled=MUTED,
+            height=32, corner_radius=8, border_color=FOCUS_RING, font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+        )
+        self.gc_web_button.pack(side="left", padx=(8, 0))
+        self._focusable(self.gc_web_button, page_widget=True)
         self._cjc_card, self.cjc_button = cards["cjc"]
         self._sir_card, self.sir_button = cards["sir"]
         self._evi_card, self.evi_button = cards["evi"]
@@ -1087,6 +1095,11 @@ class AutomationSuite(ctk.CTk):
         self._set_running("gc", True)
         self.after(1000, self.check_gc_process)
 
+    @_requires("gc")
+    def open_gc_web(self, path=None):
+        """The Guarantee Claim Command Centre in the NeraVeda web shell (same server as Inspection Reports)."""
+        self._open_shell("/" + (path or "claims").lstrip("/"))
+
     @_requires("cjc")
     def open_critical_jobs(self):
         if self.cjc_process is not None and self.cjc_process.poll() is None:
@@ -1212,8 +1225,10 @@ class AutomationSuite(ctk.CTk):
             return
         try:
             SIR_LOG.parent.mkdir(exist_ok=True)
+            # NERAVEDA_PYTHON: the Guarantee Claim pages run the Python claim helper with the same interpreter as GC Manager.
             self.sir_process, mode = inspection_server.start_server(
-                PROJECT_ROOT, port, SIR_LOG, secret=self.access.web_secret("sir", rotate=True), extra_env=self.access.db_env("sir"))
+                PROJECT_ROOT, port, SIR_LOG, secret=self.access.web_secret("sir", rotate=True),
+                extra_env={**self.access.db_env("sir"), "NERAVEDA_PYTHON": _project_python(PROJECT_ROOT)})
         except Exception as error:  # e.g. Node missing, dependencies not installed, protected storage unavailable
             messagebox.showerror("Could not open Superintendent Inspection Report", str(error), parent=self)
             return

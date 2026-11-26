@@ -1,11 +1,13 @@
 """CustomTkinter user interface for Guarantee Claim Manager."""
 from __future__ import annotations
-from datetime import date
+from datetime import date, datetime
 import json
 import os
 from pathlib import Path
 import queue
+import sqlite3
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import customtkinter as ctk
@@ -17,12 +19,28 @@ from .outlook import ReadOnlyGraphAdapter, import_fixture, import_msg_archive
 BG="#F5F6F8"; WHITE="#FFFFFF"; INK="#15191E"; MUTED="#737A84"; TEAL="#0C796F"; RED="#B42318"; AMBER="#9A6700"
 
 
+def sync_summary(result):
+    """What a sync read, with the other folders that had messages, so missing folders can be spotted."""
+    folders=result.get("folders") or {}; read={name:count for name,count in folders.items() if count}
+    lines=[f"New GC emails added: {result.get('added',0)}","","Messages read (headers):",f"Inbox: {result.get('inbox',0)}",f"Sent Items: {result.get('sentitems',0)}",f"Other folders: {sum(folders.values())} in {len(folders)} folder(s)"]
+    lines+=[f"   {name}: {count}" for name,count in list(read.items())[:25]]
+    if len(read)>25: lines.append(f"   ... and {len(read)-25} more")
+    return "\n".join(lines)
+
+
+def local_time(value):
+    """A stored UTC time as this PC's local time, e.g. 25 Nov 2026, 10:02 pm."""
+    try: moment=datetime.fromisoformat(value).astimezone()
+    except (TypeError,ValueError): return str(value or "")
+    return f"{moment.day} {moment:%b %Y}, {moment.hour%12 or 12}:{moment:%M} {'am' if moment.hour<12 else 'pm'}"
+
+
 class GCApp(ctk.CTk):
     def __init__(self, data_root=None):
         super().__init__()
         self.repo=Repository(data_root); self.title("Guarantee Claim Manager · NeraVeda")
         self.geometry("1180x780"); self.minsize(940,620); self.configure(fg_color=BG)
-        self.events=queue.Queue(); self.syncing=False
+        self.events=queue.Queue(); self.syncing=False; self._sync_label_text="Syncing with Outlook"; self._sync_base=0; self._live_at=0.0
         header=ctk.CTkFrame(self,fg_color="transparent"); header.pack(fill="x",padx=24,pady=(18,8))
         ctk.CTkLabel(header,text="GUARANTEE CLAIM MANAGER",font=ctk.CTkFont(size=11,weight="bold"),text_color=TEAL).pack(anchor="w")
         ctk.CTkLabel(header,text="Claims, correspondence and daily attention",font=ctk.CTkFont(size=25,weight="bold"),text_color=INK).pack(anchor="w",pady=(3,0))
@@ -49,16 +67,25 @@ class GCApp(ctk.CTk):
         self.button(bar,"Sync Outlook Now",self.sync_now).pack(side="right")
         self.button(bar,"Import mock JSON",self.choose_fixture,secondary=True).pack(side="right",padx=8)
         self.button(bar,"Import .msg archive",self.choose_msg_archive,secondary=True).pack(side="right",padx=8)
-        self.metrics=ctk.CTkFrame(page,fg_color="transparent"); self.metrics.pack(fill="x")
         self.metric_labels={}
-        for idx,(key,label) in enumerate((("total","Total claims"),("open","Open"),("follow_up_due","Due today"),("overdue","Overdue"),("no_response","No response"),("awaiting_supply","Awaiting supply"),("in_transit","In transit"),("awaiting_verification","Awaiting verification"),("closure_pending","Closure pending"),("closed","Closed"),("guarantee_expiry_risks","Guarantee risk"))):
-            tile=ctk.CTkFrame(self.metrics,fg_color=WHITE,border_width=1,border_color="#E8EAED",corner_radius=12); tile.grid(row=idx//4,column=idx%4,sticky="ew",padx=4,pady=4)
-            self.metrics.grid_columnconfigure(idx%4,weight=1)
-            ctk.CTkLabel(tile,text=label,text_color=MUTED,font=ctk.CTkFont(size=11)).pack(anchor="w",padx=12,pady=(9,1))
-            value=ctk.CTkLabel(tile,text="—",text_color=INK,font=ctk.CTkFont(size=23,weight="bold")); value.pack(anchor="w",padx=12,pady=(0,9)); self.metric_labels[key]=value
-        ctk.CTkLabel(page,text="Claims needing attention",font=ctk.CTkFont(size=16,weight="bold"),text_color=INK).pack(anchor="w",pady=(14,6))
+        self._tiles(page,(("stored","Emails stored"),("linked","Linked to claims"),("to_review","Emails to review"),("added_today","Added today")),compact=True)
+        self.metrics=self._tiles(page,(("total","Total claims"),("open","Open"),("follow_up_due","Due today"),("overdue","Overdue"),("no_response","No response"),("awaiting_supply","Awaiting supply"),("in_transit","In transit"),("awaiting_verification","Awaiting verification"),("closure_pending","Closure pending"),("closed","Closed"),("guarantee_expiry_risks","Guarantee risk")))
+        heading=ctk.CTkFrame(page,fg_color="transparent"); heading.pack(fill="x",pady=(14,6))
+        ctk.CTkLabel(heading,text="Claims needing attention",font=ctk.CTkFont(size=16,weight="bold"),text_color=INK).pack(side="left")
+        self.tracked_label=ctk.CTkLabel(heading,text="",font=ctk.CTkFont(size=12),text_color=MUTED); self.tracked_label.pack(side="right")
         self.att_tree=self._tree(page,("GC","Vessel","Status","Follow-up","Attention"),(100,190,210,120,300),height=8)
         self.att_tree.bind("<Double-1>",lambda _e:self.open_selected(self.att_tree))
+
+    def _tiles(self,page,items,compact=False):
+        frame=ctk.CTkFrame(page,fg_color="transparent"); frame.pack(fill="x")
+        for idx,(key,label) in enumerate(items):
+            tile=ctk.CTkFrame(frame,fg_color=WHITE,border_width=1,border_color="#E8EAED",corner_radius=12); tile.grid(row=idx//4,column=idx%4,sticky="ew",padx=4,pady=4)
+            frame.grid_columnconfigure(idx%4,weight=1,uniform="tile")
+            side={"side":"left","pady":3} if compact else {"anchor":"w","pady":(4,0)}
+            ctk.CTkLabel(tile,text=label,text_color=MUTED,font=ctk.CTkFont(size=11)).pack(padx=12,**side)
+            value=ctk.CTkLabel(tile,text="—",text_color=INK,font=ctk.CTkFont(size=18 if compact else 23,weight="bold"))
+            value.pack(padx=12,**({"side":"right","pady":3} if compact else {"anchor":"w","pady":(0,5)})); self.metric_labels[key]=value
+        return frame
 
     def _tree(self,parent,columns,widths,height=12):
         frame=ctk.CTkFrame(parent,fg_color=WHITE,corner_radius=10); frame.pack(fill="both",expand=True,pady=3)
@@ -115,7 +142,7 @@ class GCApp(ctk.CTk):
         self.vessel_tree=self._tree(page,("Name","Code","Guarantee start","Guarantee expiry","Close-out end","Active"),(280,120,150,150,150,100),16)
 
     def _build_settings(self):
-        page=self.tabs.tab("Settings")
+        page=ctk.CTkScrollableFrame(self.tabs.tab("Settings"),fg_color="transparent"); page.pack(fill="both",expand=True)
         settings=self.repo.settings(); graph=bool(settings.get("graph_enabled")); configured=bool(settings.get("graph_configured"))
         self.settings_status=ctk.CTkLabel(page,text=f"Graph enabled: {'Yes' if graph else 'No'}   ·   Credentials configured: {'Yes' if configured else 'No'}   ·   Mock mode: Available",font=ctk.CTkFont(size=14,weight="bold"),text_color=INK); self.settings_status.pack(anchor="w",pady=(8,10))
         form=ctk.CTkFrame(page,fg_color=WHITE,corner_radius=12); form.pack(fill="x",pady=5)
@@ -128,6 +155,9 @@ class GCApp(ctk.CTk):
         ctk.CTkLabel(form,text="Guarantee alert days (comma-separated; alert daily from the largest until expiry)",text_color=INK).grid(row=len(setting_fields),column=0,sticky="w",padx=14,pady=8)
         self.setting_vars["guarantee_alert_days"]=tk.StringVar(value=", ".join(map(str,settings.get("guarantee_alert_days",[90,60,30,14]))))
         ctk.CTkEntry(form,textvariable=self.setting_vars["guarantee_alert_days"],width=220).grid(row=len(setting_fields),column=1,sticky="w",padx=14,pady=8)
+        ctk.CTkLabel(form,text="Vessels to track from Outlook (comma-separated; empty = all vessels)",text_color=INK).grid(row=len(setting_fields)+1,column=0,sticky="w",padx=14,pady=8)
+        self.setting_vars["tracked_vessels"]=tk.StringVar(value=", ".join(settings.get("tracked_vessels") or []))
+        ctk.CTkEntry(form,textvariable=self.setting_vars["tracked_vessels"],width=220).grid(row=len(setting_fields)+1,column=1,sticky="w",padx=14,pady=8)
         ctk.CTkLabel(page,text=f"Local user: {settings.get('local_user_name') or 'Not configured'}",text_color=MUTED).pack(anchor="w",pady=(9,3))
         self.button(page,"Save settings",self.save_settings).pack(anchor="w",pady=5)
         ctk.CTkLabel(page,text="Outlook access is read-only. Disconnect removes only the local encrypted token cache.",text_color=MUTED).pack(anchor="w",pady=(10,3))
@@ -140,13 +170,25 @@ class GCApp(ctk.CTk):
         for key,value in self.repo.dashboard().items():
             if key in self.metric_labels:self.metric_labels[key].configure(text=str(value))
         self._fill_attention(self.att_tree,limit=10)
-        settings=self.repo.settings(); self.sync_label.configure(text="Outlook Not Configured" if not settings.get("graph_configured") else ("Outlook Ready · Syncing" if self.syncing else "Outlook Connected"),text_color=AMBER if not settings.get("graph_configured") else TEAL)
-        states=self.repo.sync_status(); success=[r.get("last_success_at") for r in states if r.get("last_success_at")];
-        if success:self.sync_label.configure(text=self.sync_label.cget("text")+f" · Last successful sync {max(success)}")
-        attempted=[r.get("last_attempt_at") for r in states if r.get("last_attempt_at")]
-        errors=[r.get("last_error") for r in states if r.get("last_error")]
-        if errors:self.sync_label.configure(text=f"Sync error: {errors[-1][:90]}",text_color=RED)
-        elif attempted:self.sync_label.configure(text=self.sync_label.cget("text")+f" · Last attempted {max(attempted)}")
+        self.tracked_label.configure(text="Emails shown for: "+(", ".join(self.repo.settings().get("tracked_vessels") or []) or "all vessels"))
+        self.refresh_sync_status()
+
+    def refresh_sync_status(self):
+        """Email tiles and the Outlook line only, so it can run during a sync without disturbing tables or fields."""
+        summary=self.repo.email_summary()
+        for key,value in summary.items():self.metric_labels[key].configure(text=str(value))
+        if self.syncing:
+            self.sync_label.configure(text=f"{self._sync_label_text} · {max(0,summary['stored']-self._sync_base)} new emails so far",text_color=TEAL);return
+        states=self.repo.sync_status()
+        errors=[r["last_error"] for r in states if r.get("last_error")]
+        success=[r["last_success_at"] for r in states if r.get("last_success_at")]
+        if errors:text,color=f"Sync error: {errors[-1][:90]}",RED
+        elif not self.repo.settings().get("graph_configured"):text,color="Outlook Not Configured",AMBER
+        else:text,color="Outlook Connected"+(f" · Last sync {local_time(max(success))}" if success else ""),TEAL
+        self.sync_label.configure(text=text,text_color=color)
+
+    def _begin(self,label):
+        self._sync_label_text=label; self._sync_base=self.repo.email_summary()["stored"]; self._live_at=time.monotonic(); self.syncing=True; self.refresh_dashboard()
 
     def refresh_register(self):
         if not hasattr(self,"claim_tree"):return
@@ -436,24 +478,24 @@ class GCApp(ctk.CTk):
     def choose_msg_archive(self):
         directory=filedialog.askdirectory(parent=self,title="Select the Outlook .msg archive folder")
         if not directory or self.syncing:return
-        self.syncing=True;self.refresh_dashboard()
+        self._begin("Importing .msg files")
         def work():
             try:self.events.put(("archive_ok",import_msg_archive(self.repo,directory)))
             except Exception as e:self.events.put(("archive_error",str(e)))
         threading.Thread(target=work,daemon=True).start()
 
-    def sync_now(self):
+    def sync_now(self,automatic=False):
         if self.syncing:return
         settings=self.repo.settings()
         if not settings.get("graph_enabled") or not settings.get("graph_configured"):
             messagebox.showinfo("Outlook Not Configured","Set GC_GRAPH_ENABLED=true, AZURE_CLIENT_ID and AZURE_TENANT_ID to use read-only Microsoft Graph. You can import a local mock JSON fixture now.",parent=self);return
-        self.syncing=True;self.refresh_dashboard();self.repo.sync_attempt()
+        self.repo.sync_attempt();self._begin("Syncing with Outlook")
         def work():
             try:
                 token_path=self.repo.root/"credentials"/"gc_msal_cache.bin"
                 adapter=ReadOnlyGraphAdapter(os.getenv("AZURE_CLIENT_ID"),os.getenv("AZURE_TENANT_ID"),token_path)
-                counts=adapter.sync(self.repo,lambda message:self._device_prompt(message));self.events.put(("sync_ok",counts))
-            except Exception as e:self.repo.sync_attempt(str(e));self.events.put(("sync_error",str(e)))
+                counts=adapter.sync(self.repo,lambda message:self._device_prompt(message),interactive=not automatic);self.events.put(("auto_sync" if automatic else "sync_ok",counts))
+            except Exception as e:self.repo.sync_attempt(str(e));self.events.put(("auto_sync" if automatic else "sync_error",str(e)))
         threading.Thread(target=work,daemon=True).start()
 
     def _device_prompt(self,message):
@@ -462,13 +504,14 @@ class GCApp(ctk.CTk):
         self.after(0,show);done.wait()
     def _automatic_sync(self):
         settings=self.repo.settings()
-        if settings.get("graph_enabled") and settings.get("graph_configured") and not self.syncing:self.sync_now()
+        if settings.get("graph_enabled") and settings.get("graph_configured") and not self.syncing:self.sync_now(automatic=True)
         interval=max(1,int(settings.get("graph_sync_interval_minutes",5)))*60000;self._sync_after=self.after(interval,self._automatic_sync)
     def _poll_events(self):
         while not self.events.empty():
             kind,payload=self.events.get()
             self.syncing=False
-            if kind=="sync_ok":messagebox.showinfo("Outlook sync complete",f"Inbox: {payload.get('inbox',0)} message(s)\nSent Items: {payload.get('sentitems',0)} message(s)",parent=self)
+            if kind=="auto_sync":pass  # no popup: the dashboard line shows the last sync or its error
+            elif kind=="sync_ok":messagebox.showinfo("Outlook sync complete",sync_summary(payload),parent=self)
             elif kind=="archive_ok":
                 imported=sum(1 for result in payload if not any(key in result for key in ("duplicate","ignored","error")))
                 duplicates=sum(1 for result in payload if result.get("duplicate"))
@@ -478,6 +521,10 @@ class GCApp(ctk.CTk):
             elif kind=="archive_error":messagebox.showerror(".msg archive import failed",payload,parent=self)
             else:messagebox.showerror("Outlook sync failed",payload,parent=self)
             self.refresh_all()
+        if self.syncing and time.monotonic()-self._live_at>=5:
+            self._live_at=time.monotonic()
+            try:self.refresh_sync_status()
+            except sqlite3.OperationalError:pass  # the sync is writing: try again in 5 seconds
         self._poll_after=self.after(300,self._poll_events)
     def disconnect(self):
         token_path=self.repo.root/"credentials"/"gc_msal_cache.bin"
@@ -485,8 +532,8 @@ class GCApp(ctk.CTk):
         self.refresh_dashboard()
     def save_settings(self):
         try:
-            values={k:(sorted({int(day.strip()) for day in v.get().split(",") if day.strip()},reverse=True) if k=="guarantee_alert_days" else int(v.get())) for k,v in self.setting_vars.items()}
-            if any(v<1 for k,v in values.items() if k!="guarantee_alert_days"):raise ValueError("Settings must be at least 1.")
+            values={k:(sorted({int(day.strip()) for day in v.get().split(",") if day.strip()},reverse=True) if k=="guarantee_alert_days" else [name.strip() for name in v.get().split(",") if name.strip()] if k=="tracked_vessels" else int(v.get())) for k,v in self.setting_vars.items()}
+            if any(v<1 for k,v in values.items() if k not in {"guarantee_alert_days","tracked_vessels"}):raise ValueError("Settings must be at least 1.")
             if any(not 1<=day<=365 for day in values["guarantee_alert_days"]):raise ValueError("Guarantee alert days must be between 1 and 365.")
             self.repo.save_settings(values);self.refresh_all();messagebox.showinfo("Settings saved","GC settings updated.",parent=self)
         except Exception as e:messagebox.showerror("Invalid settings",str(e),parent=self)

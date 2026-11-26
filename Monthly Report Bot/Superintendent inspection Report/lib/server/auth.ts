@@ -18,11 +18,11 @@ export const DEFAULT_NEXT = "/inspections"
 export const SERVICE_HEADER = "x-neraveda-service"
 /** The workspaces this server hosts. A session is valid with the right to any of them; each page and API route then
  *  needs the right to its own workspace (route({ module }), PAGE_MODULES). APP is the default. */
-export const MODULES: readonly string[] = ["sir", "dd"]
+export const MODULES: readonly string[] = ["sir", "dd", "gc"]
 /** Which workspace a page belongs to, by path prefix (first match). Other pages (e.g. the home page) need any of MODULES. */
 /** For routes any workspace of this server may use (e.g. the session check behind the shell). */
 export const ANY_MODULE = ""
-export const PAGE_MODULES: readonly (readonly [string, string])[] = [["/docking", "dd"], ["/inspections", "sir"]]
+export const PAGE_MODULES: readonly (readonly [string, string])[] = [["/claims", "gc"], ["/docking", "dd"], ["/inspections", "sir"]]
 const SESSION_SECONDS = 12 * 3600
 
 export type Grant = Readonly<{ module: string; role: string }>

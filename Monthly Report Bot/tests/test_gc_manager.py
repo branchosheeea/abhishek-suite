@@ -2,14 +2,15 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from gc_manager.attention import calculate_attention
-from gc_manager.outlook import GRAPH_SCOPES, GRAPH_FORBIDDEN_SCOPES, ReadOnlyGraphAdapter, import_fixture, import_msg_archive
+from gc_manager.outlook import GRAPH_SCOPES, GRAPH_FORBIDDEN_SCOPES, GraphError, ReadOnlyGraphAdapter, import_fixture, import_msg_archive
 from gc_manager.repository import Repository
 from gc_manager.rules import extract_gc_numbers, identify_vessel
-from gc_manager.ui import GCApp
+from gc_manager.ui import GCApp, local_time, sync_summary
 from suite_services.database import connection, initialize
 
 
@@ -94,6 +95,7 @@ class GuaranteeClaimManagerTests(unittest.TestCase):
         self.assertEqual(len(self.repo.emails(claim)),2)
 
     def test_registering_new_gc_can_bulk_link_only_same_compound_key_reviews(self):
+        self.repo.save_settings({"tracked_vessels":[]})
         self.repo.import_message({"id":"impala-1","subject":"DHT Impala GC014 maker update"})
         self.repo.import_message({"id":"impala-2","subject":"DHT IMPALA GC-014 dispatch reply"})
         self.repo.import_message({"id":"impala-other-gc","subject":"DHT Impala GC015 maker update"})
@@ -163,6 +165,7 @@ class GuaranteeClaimManagerTests(unittest.TestCase):
         calls=[]
         def request(url,token):
             calls.append(url)
+            if "/delta" not in url and "page=2" not in url:return {}
             if "inbox" in url and "page=2" not in url:
                 return {"value":[{"id":"page-one","subject":"DHT Impala GC014 evidence","receivedDateTime":"2026-11-13T08:00:00Z","from":{"emailAddress":{"address":"maker@example.test"}}}],"@odata.nextLink":"https://graph.microsoft.com/page=2"}
             if "page=2" in url:
@@ -170,7 +173,7 @@ class GuaranteeClaimManagerTests(unittest.TestCase):
             return {"value":[],"@odata.deltaLink":"https://graph.microsoft.com/sent-delta"}
         adapter._request=request
         result=adapter.sync(self.repo)
-        self.assertEqual(result,{"inbox":2,"sentitems":0})
+        self.assertEqual(result,{"inbox":2,"sentitems":0,"folders":{},"added":2})
         self.assertEqual(self.repo.delta_state("inbox")["delta_link"],"https://graph.microsoft.com/inbox-delta")
         self.assertEqual(self.repo.delta_state("sentitems")["delta_link"],"https://graph.microsoft.com/sent-delta")
         self.assertEqual(len(self.repo.emails(1)),2)
@@ -207,12 +210,218 @@ class GuaranteeClaimManagerTests(unittest.TestCase):
             self.assertIsNone(self.repo.claim(other)["created_by"])
 
     def test_customtkinter_workspace_starts_with_all_required_sections(self):
-        app=GCApp(self.temp.name)
+        with patch.dict(os.environ,{"AZURE_CLIENT_ID":"","AZURE_TENANT_ID":"","GC_GRAPH_ENABLED":"false"}):app=GCApp(self.temp.name)
         try:
             app.update_idletasks()
             self.assertEqual(set(app.tabs._tab_dict),{"Dashboard","Daily Attention","GC Register","Review Queue","Vessels","Settings"})
             self.assertEqual(app.sync_label.cget("text").split(" · ")[0],"Outlook Not Configured")
         finally:app.destroy()
+
+    def test_graph_does_not_duplicate_emails_imported_from_msg_files(self):
+        claim=self.repo.create_claim(self.impala,"GC-014")
+        mail={"internet_message_id":"<Mail-1@example.test>","subject":"DHT Impala GC014 maker update","mailbox_folder":"Sent Items","source":"local_msg_archive"}
+        first=self.repo.import_message(mail)
+        again=self.repo.import_message({**mail,"id":"graph-1","graph_immutable_id":"graph-1","internet_message_id":" <mail-1@EXAMPLE.test> ","source":"graph"})
+        self.assertEqual((again.get("duplicate"),again["email_id"],again["claim_id"]),(True,first["email_id"],claim))
+        self.repo.import_message({**mail,"id":"graph-2","internet_message_id":"<mail-2@example.test>"})
+        for number in (3,4):self.repo.import_message({"id":f"graph-{number}","internet_message_id":"","subject":"DHT Impala GC014 no id"})
+        self.assertEqual(len(self.repo.emails(claim)),4)
+        self.assertEqual(len([e for e in self.repo.timeline(claim) if e["event_type"]=="EMAIL"]),4)
+
+    def test_email_copied_to_oneself_is_kept_once_as_outgoing(self):
+        claim=self.repo.create_claim(self.impala,"GC-014")
+        adapter=ReadOnlyGraphAdapter("client","tenant");adapter.acquire_token=lambda prompt=None:"token"
+        adapter._request=lambda url,token:{} if "/delta" not in url else {"value":[{"id":"inbox-copy" if "/inbox/" in url else "sent-copy","internetMessageId":"<self@example.test>","subject":"DHT Impala GC014","receivedDateTime":"2026-11-13T08:00:00Z","from":{}}],"@odata.deltaLink":"d"}
+        adapter.sync(self.repo)
+        self.assertEqual([e["direction"] for e in self.repo.emails(claim)],["OUTGOING"])
+
+    def _fake_mailbox(self, messages, folders):
+        """Graph stand-in. messages: folder id -> items; folders: parent id ('' = top) -> [(id, name)]."""
+        adapter=ReadOnlyGraphAdapter("client","tenant");adapter.acquire_token=lambda prompt=None,interactive=True,renew=False:"token";calls=[]
+        def request(url,token):
+            calls.append(url);path=url.split("/v1.0/me",1)[1].split("?")[0]
+            if path=="":return {"mail":"Me@Example.test","userPrincipalName":"me@example.test"}
+            if path.startswith("/messages/"):return {"body":{"content":"<p>Body of "+path.rsplit("/",1)[1]+"</p>"}}
+            if path.endswith("/messages/delta"):
+                folder=path.split("/")[2]
+                return {"value":messages.get(folder,[]),"@odata.deltaLink":"https://graph.microsoft.com/v1.0/me/mailFolders/"+folder+"/messages/delta?token=1"}
+            parent=path.split("/")[2] if path.endswith("/childFolders") else ("" if path=="/mailFolders" else None)
+            if parent is None:return {"id":path.rsplit("/",1)[1]}
+            return {"value":[{"id":i,"displayName":n,"childFolderCount":len(folders.get(i,[]))} for i,n in folders.get(parent,[])]}
+        adapter._request=request
+        return adapter,calls
+
+    def test_sync_renews_an_expired_token_once_and_continues_in_the_same_folder(self):
+        self.repo.create_claim(self.impala,"GC-014")
+        def mail(i):return {"id":i,"internetMessageId":f"<{i}@x>","subject":"DHT Impala GC014","receivedDateTime":"2026-03-01T00:00:00Z"}
+        adapter,calls=self._fake_mailbox({"inbox":[mail("a"),mail("b"),mail("c")]},{});plain=adapter._request;asked=[];valid={"token"}
+        def acquire(prompt=None,interactive=True,renew=False):
+            asked.append((interactive,renew))
+            if renew:valid.add("new")
+            return "new" if renew else "token"
+        def request(url,token):
+            if "/messages/b?" in url:valid.discard("token")  # the hour is up while reading the second email
+            if token not in valid:raise GraphError("Microsoft Graph returned HTTP 401: Invalid token lifetime",401)
+            return plain(url,token)
+        adapter.acquire_token=acquire;adapter._request=request
+        self.assertEqual(adapter.sync(self.repo)["added"],3)
+        self.assertEqual(asked,[(True,False),(False,True)])  # renewed once, without a sign-in
+        self.assertEqual(len([c for c in calls if "/mailFolders/inbox/messages/delta" in c]),1)  # folder not started over
+
+    def test_a_token_that_stays_rejected_or_cannot_be_renewed_stops_the_sync(self):
+        adapter,_=self._fake_mailbox({},{});renewals=[]
+        def acquire(prompt=None,interactive=True,renew=False):
+            renewals.append(renew);return "token"
+        def rejected(url,token):raise GraphError("rejected",401)
+        adapter.acquire_token=acquire;adapter._request=rejected
+        with self.assertRaises(GraphError):adapter.sync(self.repo)
+        self.assertEqual(renewals,[False,True])  # one renewal, no endless loop
+        class App:
+            def get_accounts(self):return ["me"]
+            def acquire_token_silent(self,scopes,account,force_refresh):self.forced=force_refresh;return None
+        real=ReadOnlyGraphAdapter("client","tenant");real._app=App()
+        with self.assertRaisesRegex(RuntimeError,"sign-in needed"):real.acquire_token(interactive=False,renew=True)
+        self.assertTrue(real._app.forced)
+
+    def test_only_tracked_vessels_are_read_shown_and_counted_until_the_list_is_widened(self):
+        self.repo.create_claim(self.impala,"GC-014")
+        def mail(i,subject):return {"id":i,"internetMessageId":f"<{i}@x>","subject":subject,"receivedDateTime":"2026-03-01T00:00:00Z"}
+        folders={"":[("inbox","Inbox"),("f-opal","DHT Opal")],"inbox":[("f-imp","DHT Impala"),("f-leo","DHT Leopard"),("f-lion","Lion"),("f-any","Makers")],"f-leo":[("f-sub","Old claims")]}
+        messages={"inbox":[mail("imp","DHT Impala GC014"),mail("leo","DHT Leopard GC014"),mail("both","DHT Impala and DHT Leopard GC014"),mail("none","GC014 maker reply")],
+                  "f-imp":[mail("imp2","DHT Impala GC014 b")],"f-leo":[mail("leo2","DHT Leopard GC014 b")],"f-sub":[mail("leo3","GC015")],"f-any":[mail("leo4","DHT Leopard GC014 c"),mail("imp3","DHT Impala GC014 c")]}
+        self.assertEqual(self.repo.settings()["tracked_vessels"],["DHT IMPALA"])
+        adapter,calls=self._fake_mailbox(messages,folders);result=adapter.sync(self.repo)
+        self.assertEqual(set(result["folders"]),{"Inbox/DHT Impala","Inbox/Makers"})
+        self.assertEqual(result["added"],5)  # imp, both, none, imp2, imp3
+        self.assertFalse([c for c in calls if "/messages/leo" in c])
+        # An email of another vessel that is already stored stays stored, but is not shown or counted.
+        self.repo.import_message({"id":"stored","subject":"DHT Leopard GC099"})
+        self.assertEqual({r["subject"] for r in self.repo.reviews()},{"DHT Impala and DHT Leopard GC014","GC014 maker reply"})
+        self.assertEqual({k:self.repo.email_summary()[k] for k in ("stored","linked","to_review")},{"stored":5,"linked":3,"to_review":2})
+        self.assertEqual(len(self.repo.reviews(open_only=False)),3)
+        with self.assertRaisesRegex(ValueError,"DHT WRONG"):self.repo.save_settings({"tracked_vessels":["DHT WRONG"]})
+        self.repo.save_settings({"tracked_vessels":["dht impala"]})
+        self.assertIn("token=1",self.repo.delta_state("inbox")["delta_link"])  # same list: positions kept
+        self.repo.save_settings({"tracked_vessels":["DHT Impala","DHT LEOPARD"]})
+        self.assertIsNone(self.repo.delta_state("inbox")["delta_link"])
+        self.assertEqual(adapter.sync(self.repo)["added"],4)  # leo, leo2, leo3, leo4; nothing twice
+        self.assertIn("DHT Leopard GC099",{r["subject"] for r in self.repo.reviews()})
+
+    def test_widening_the_list_during_a_sync_does_not_keep_old_positions(self):
+        adapter,_=self._fake_mailbox({"inbox":[{"id":"a","subject":"DHT Impala GC014","receivedDateTime":"2026-03-01T00:00:00Z"}]},{});plain=adapter._request
+        def request(url,token):
+            if "/mailFolders/inbox/messages/delta" in url:self.repo.save_settings({"tracked_vessels":[]})
+            return plain(url,token)
+        adapter._request=request;adapter.sync(self.repo)
+        self.assertIsNone(self.repo.delta_state("inbox")["delta_link"])
+
+    def test_sync_reads_vessel_folders_from_the_start_date_and_fetches_only_gc_bodies(self):
+        self.repo.save_settings({"tracked_vessels":[]})
+        claim=self.repo.create_claim(self.impala,"GC-014")
+        def mail(i,subject,when="2026-03-01T00:00:00Z",sender="maker@example.test"):
+            return {"id":i,"internetMessageId":f"<{i}@x>","subject":subject,"receivedDateTime":when,"from":{"emailAddress":{"address":sender}}}
+        folders={"":[("inbox","Inbox"),("sentitems","Sent Items"),("deleteditems","Deleted Items"),("f-imp","DHT Impala"),("f-pers","Holiday"),("f-lion","Lion")],
+                 "inbox":[("f-any","Makers")],"f-any":[("f-deep","Deep")],"f-imp":[("f-sub","Old claims")],"deleteditems":[("f-del","DHT Impala")],"f-pers":[("f-pers-v","DHT OPAL")]}
+        messages={"inbox":[mail("in","DHT Impala GC014 a"),mail("old","DHT Impala GC014 old","2025-12-31T23:59:59Z"),mail("edge","DHT Impala GC014 edge","2026-01-01T00:00:00Z"),mail("nogc","DHT Impala noon report")],
+                  "f-imp":[mail("rule","DHT Impala GC014 b"),mail("mine","DHT Impala GC014 c",sender="ME@example.test"),mail("in","DHT Impala GC014 a")],
+                  "f-sub":[mail("sub","DHT Impala GC014 d")],"f-deep":[mail("deep","DHT Impala GC014 e")],"f-del":[mail("deleted","DHT Impala GC014 x")],"f-pers":[mail("private","DHT Impala GC014 y")]}
+        adapter,calls=self._fake_mailbox(messages,folders)
+        result=adapter.sync(self.repo)
+        self.assertEqual(set(result["folders"]),{"Inbox/Makers","Inbox/Makers/Deep","DHT Impala","DHT Impala/Old claims","Lion","Holiday/DHT OPAL"})
+        self.assertEqual(result["added"],6)
+        stored={e["graph_immutable_id"]:e for e in self.repo.emails(claim)}
+        self.assertEqual(set(stored),{"in","edge","rule","mine","sub","deep"})
+        self.assertEqual((stored["mine"]["direction"],stored["rule"]["direction"]),("OUTGOING","INCOMING"))
+        self.assertEqual(stored["rule"]["mailbox_folder"],"DHT Impala")
+        self.assertEqual(stored["rule"]["sanitised_body"],"Body of rule")
+        self.assertEqual(len([c for c in calls if "/me/messages/" in c]),6)
+        self.assertTrue(all("body" not in c for c in calls if "/delta" in c))
+        calls.clear();self.assertEqual(adapter.sync(self.repo)["added"],0)
+        self.assertEqual([c for c in calls if "/me/messages/" in c],[])
+        self.assertTrue(all("token=1" in c for c in calls if "/delta" in c))
+
+    def test_expired_sync_position_reads_the_folder_again_without_duplicates(self):
+        claim=self.repo.create_claim(self.impala,"GC-014")
+        item={"id":"a","internetMessageId":"<a@x>","subject":"DHT Impala GC014","receivedDateTime":"2026-03-01T00:00:00Z"}
+        adapter,_=self._fake_mailbox({"inbox":[item]},{});adapter.sync(self.repo);plain=adapter._request
+        def expired(url,token):
+            if "token=1" in url:raise GraphError("gone",410)
+            return plain(url,token)
+        adapter._request=expired
+        self.assertEqual(adapter.sync(self.repo)["inbox"],1)
+        self.assertEqual(len(self.repo.emails(claim)),1)
+
+    def test_sync_summary_lists_folders_that_had_messages(self):
+        text=sync_summary({"added":3,"inbox":10,"sentitems":4,"folders":{"DHT Impala":7,"Empty":0}})
+        self.assertIn("New GC emails added: 3",text);self.assertIn("DHT Impala: 7",text);self.assertNotIn("Empty",text)
+
+    def test_email_summary_counts_links_open_reviews_and_local_day(self):
+        self.assertEqual(self.repo.email_summary(),{"stored":0,"linked":0,"added_today":0,"to_review":0})
+        one=self.repo.create_claim(self.impala,"GC-027");two=self.repo.create_claim(self.impala,"GC-031")
+        self.repo.import_message({"id":"linked","subject":"DHT Impala GC027"})
+        multi=self.repo.import_message({"id":"multi","subject":"DHT Impala GC-027 and GC-031"})
+        self.repo.import_message({"id":"open","subject":"GC099 no vessel"})
+        self.assertEqual(self.repo.email_summary(),{"stored":3,"linked":1,"added_today":3,"to_review":2})
+        self.repo.resolve_multiple_gc_review(next(r["id"] for r in self.repo.reviews() if r["email_id"]==multi["email_id"]),[one,two],"both")
+        self.assertEqual(self.repo.email_summary(),{"stored":3,"linked":2,"added_today":3,"to_review":1})
+        local=datetime(2026,3,10,0,30).astimezone()  # just after local midnight is still the previous day in UTC east of Greenwich
+        with connection(self.temp.name) as db,db:db.execute("UPDATE gc_emails SET imported_at=? WHERE graph_immutable_id='open'",(local.astimezone(timezone.utc).isoformat(timespec="microseconds"),))
+        self.assertEqual(self.repo.email_summary("2026-03-10")["added_today"],1)
+        self.assertEqual(self.repo.email_summary("2026-03-09")["added_today"],0)
+
+    def test_dashboard_shows_email_numbers_live_and_drops_an_old_error(self):
+        self.repo.create_claim(self.impala,"GC-014");self.repo.sync_attempt("old failure")
+        self.repo.import_message({"id":"before","subject":"DHT Impala GC014","message_datetime":"2026-11-13T08:00:00Z"})
+        with patch.dict(os.environ,{"AZURE_CLIENT_ID":"c","AZURE_TENANT_ID":"t","GC_GRAPH_ENABLED":"true"}),patch("gc_manager.ui.messagebox"),patch("gc_manager.ui.threading.Thread"):
+            app=GCApp(self.temp.name)
+            try:
+                self.assertIn("old failure",app.sync_label.cget("text"))
+                app.sync_now()
+                self.assertEqual(app.sync_label.cget("text"),"Syncing with Outlook · 0 new emails so far")
+                self.repo.import_message({"id":"during","subject":"DHT Impala GC014 again","message_datetime":"2026-11-14T08:00:00Z"})
+                app.after_cancel(app._poll_after);app._poll_events()
+                self.assertEqual(app.metric_labels["stored"].cget("text"),"1")  # not yet 5 seconds
+                app._live_at-=6
+                with patch.object(app,"_fill_attention",side_effect=AssertionError("tables must not be rebuilt")):
+                    app.after_cancel(app._poll_after);app._poll_events()
+                self.assertEqual({k:app.metric_labels[k].cget("text") for k in ("stored","linked","to_review","added_today")},{"stored":"2","linked":"2","to_review":"0","added_today":"2"})
+                self.assertIn("1 new emails so far",app.sync_label.cget("text"))
+                self.repo.save_delta_state("inbox","d",1)
+                app.events.put(("auto_sync",{}));app.after_cancel(app._poll_after);app._poll_events()
+                self.assertTrue(app.sync_label.cget("text").startswith("Outlook Connected · Last sync "))
+                self.assertEqual(app.metric_labels["total"].cget("text"),"1")
+            finally:app.destroy()
+
+    def test_local_time_text(self):
+        self.assertEqual(local_time(datetime(2026,11,25,22,2).astimezone().astimezone(timezone.utc).isoformat()),"25 Nov 2026, 10:02 pm")
+        self.assertEqual(local_time(datetime(2026,1,5,0,7).astimezone().isoformat()),"5 Jan 2026, 12:07 am")
+        self.assertEqual(local_time(None),"")
+
+    def test_automatic_sync_never_starts_sign_in_or_shows_a_popup(self):
+        class App:
+            def get_accounts(self):return []
+            def initiate_device_flow(self,scopes):raise AssertionError("sign-in started")
+        adapter=ReadOnlyGraphAdapter("client","tenant");adapter._app=App()
+        with self.assertRaisesRegex(RuntimeError,"sign-in needed"):adapter.sync(self.repo,interactive=False)
+        with patch.dict(os.environ,{"AZURE_CLIENT_ID":"c","AZURE_TENANT_ID":"t","GC_GRAPH_ENABLED":"true"}),patch("gc_manager.ui.messagebox") as popup,patch("gc_manager.ui.threading.Thread") as thread:
+            app=GCApp(self.temp.name)
+            try:
+                for outcome in ({"inbox":1,"sentitems":0},RuntimeError("sign-in needed")):
+                    with patch("gc_manager.ui.ReadOnlyGraphAdapter") as fake:
+                        fake.return_value.sync.side_effect=[outcome]
+                        app.sync_now(automatic=True);thread.call_args.kwargs["target"]()
+                        self.assertFalse(fake.return_value.sync.call_args.kwargs["interactive"])
+                    app.after_cancel(app._poll_after);app._poll_events()
+                    self.assertFalse(app.syncing)
+                self.assertEqual(popup.mock_calls,[])
+                self.assertIn("sign-in needed",app.sync_label.cget("text"))
+                with patch("gc_manager.ui.ReadOnlyGraphAdapter") as fake:
+                    fake.return_value.sync.return_value={"inbox":1,"sentitems":0}
+                    app.sync_now();thread.call_args.kwargs["target"]()
+                    self.assertTrue(fake.return_value.sync.call_args.kwargs["interactive"])
+                app.after_cancel(app._poll_after);app._poll_events()
+                popup.showinfo.assert_called_once()
+            finally:app.destroy()
 
     def test_status_closure_reopen_undo_and_attention(self):
         claim_id=self.repo.create_claim(self.impala,"GC-031",next_follow_up_date="2026-11-13")

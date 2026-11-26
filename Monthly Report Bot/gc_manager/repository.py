@@ -11,7 +11,7 @@ import re
 import sqlite3
 from suite_services.database import connection, initialize
 from suite_services.storage import runtime_root
-from .rules import STATUS, WAITING_ON, LABELS, TRANSITIONS, extract_gc_numbers, identify_vessel
+from .rules import STATUS, WAITING_ON, LABELS, TRANSITIONS, extract_gc_numbers, identify_vessel, normalise_name
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS gc_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
@@ -25,16 +25,28 @@ CREATE TABLE IF NOT EXISTS gc_outlook_sync_state(id INTEGER PRIMARY KEY, folder_
 CREATE TABLE IF NOT EXISTS gc_review_queue(id INTEGER PRIMARY KEY, email_id INTEGER NOT NULL REFERENCES gc_emails(id), review_type TEXT NOT NULL, suggested_vessel_id INTEGER REFERENCES vessels(id), suggested_claim_id INTEGER REFERENCES gc_claims(id), reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN', resolution_notes TEXT, reviewed_at TEXT, reviewed_by TEXT, created_at TEXT NOT NULL, UNIQUE(email_id,review_type));
 CREATE TABLE IF NOT EXISTS gc_audit_events(id INTEGER PRIMARY KEY, claim_id INTEGER REFERENCES gc_claims(id), email_id INTEGER REFERENCES gc_emails(id), action TEXT NOT NULL, details_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, created_by TEXT);
 CREATE TABLE IF NOT EXISTS gc_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS gc_suggestions(id INTEGER PRIMARY KEY, claim_id INTEGER NOT NULL REFERENCES gc_claims(id), suggestion_key TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, proposed_json TEXT NOT NULL DEFAULT '{}', evidence_email_id INTEGER REFERENCES gc_emails(id), quote TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'OPEN', created_at TEXT NOT NULL, reviewed_at TEXT, reviewed_by TEXT);
+CREATE TABLE IF NOT EXISTS gc_snoozes(id INTEGER PRIMARY KEY, claim_id INTEGER NOT NULL REFERENCES gc_claims(id), snoozed_until TEXT NOT NULL, reason TEXT NOT NULL, created_by TEXT, created_at TEXT NOT NULL, cleared_at TEXT, cleared_by TEXT);
+CREATE TABLE IF NOT EXISTS gc_review_marks(id INTEGER PRIMARY KEY, user_name TEXT NOT NULL, scope TEXT NOT NULL, scope_key TEXT NOT NULL DEFAULT '', reviewed_at TEXT NOT NULL, UNIQUE(user_name,scope,scope_key));
 CREATE INDEX IF NOT EXISTS gc_claim_status_idx ON gc_claims(current_status);
 CREATE INDEX IF NOT EXISTS gc_claim_followup_idx ON gc_claims(next_follow_up_date);
 CREATE INDEX IF NOT EXISTS gc_email_datetime_idx ON gc_emails(message_datetime);
 CREATE INDEX IF NOT EXISTS gc_review_status_idx ON gc_review_queue(status);
+CREATE INDEX IF NOT EXISTS gc_suggestion_claim_idx ON gc_suggestions(claim_id);
+CREATE INDEX IF NOT EXISTS gc_snooze_claim_idx ON gc_snoozes(claim_id);
 """
-SCHEMA_VERSION = 2
+# Version 3 (26 Nov 2026, additive): the claim's next required action and the date it became pending with the
+# verified owner (both confirmed by a person), plus suggestion decisions, snoozes and per-user review marks.
+SCHEMA_VERSION = 3
+ADDED_COLUMNS = (("gc_claims", "next_action", "TEXT NOT NULL DEFAULT ''"), ("gc_claims", "action_since", "TEXT"))
 DEFAULTS = {
     "standard_followup_days": 7, "no_response_days": 14, "verification_days": 5,
-    "dispatch_followup_days": 1, "delivery_followup_days": 1, "graph_sync_interval_minutes": 5,
-    "guarantee_alert_days": [90, 60, 30, 14], "local_user_name": os.getenv("GC_LOCAL_USER_NAME") or None,
+    "dispatch_followup_days": 1, "delivery_followup_days": 1, "graph_sync_interval_minutes": 5, "graph_start_date": "2026-01-01",
+    "tracked_vessels": ["DHT IMPALA"],  # only these are read from Outlook and shown for review; empty = every vessel
+    "guarantee_alert_days": [90, 60, 30, 14], "guarantee_critical_days": 30, "developments_days": 14,
+    # Who wrote an email, by the sender's domain (used only to SUGGEST the action owner; a person confirms).
+    "party_domains": {"goodwoodship.com": "SUPERINTENDENT", "goodwoodfleet.com": "VESSEL", "hd.com": "SHIPYARD"},
+    "local_user_name": os.getenv("GC_LOCAL_USER_NAME") or None,
     "vessel_auto_match_threshold": int(os.getenv("GC_VESSEL_AUTO_MATCH_THRESHOLD",90)),
     "vessel_review_threshold": int(os.getenv("GC_VESSEL_REVIEW_THRESHOLD",80)),
     "vessel_match_margin": int(os.getenv("GC_VESSEL_MATCH_MARGIN",8)),
@@ -47,9 +59,39 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
+def local_today():
+    """Today on this PC's calendar (date-only controlled fields such as action_since)."""
+    return date.today().isoformat()
+
+
+class ConflictError(ValueError):
+    """The claim changed after the person loaded it (another window or person saved first)."""
+
+
+def _check_fresh(old, expected_updated_at):
+    if expected_updated_at is not None and old["updated_at"] != expected_updated_at:
+        raise ConflictError("This claim was changed by someone else (or in another window) after you opened it. "
+                            "Reload it, check the change, and try again.")
+
+
+def _dedupe_key(stable):
+    return "id:"+str(stable)
+
+
+def tracked_ids(names, vessels):
+    """Vessel ids for the tracked names, or None when every vessel is tracked."""
+    wanted={normalise_name(name) for name in names or ()}
+    return {v["id"] for v in vessels if normalise_name(v["name"]) in wanted} if wanted else None
+
+
+def tracked_sql(column, tracked):
+    """SQL test that a row is for a tracked vessel or has no vessel yet."""
+    return "1" if tracked is None else f"({column} IS NULL OR {column} IN ({','.join(map(str,sorted(tracked)))}))"
+
+
 def _validate_dates(values):
     for key, value in values.items():
-        if value and (key.endswith("_date") or key in {"date_reported", "date_submitted"}):
+        if value and (key.endswith("_date") or key in {"date_reported", "date_submitted", "action_since"}):
             try:
                 date.fromisoformat(str(value))
             except ValueError as error:
@@ -101,6 +143,9 @@ class Repository:
             try:
                 for statement in SCHEMA.split(";"):
                     if statement.strip(): db.execute(statement)
+                for table, column, kind in ADDED_COLUMNS:
+                    if column not in {r["name"] for r in db.execute(f"PRAGMA table_info({table})")}:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
                 for migration_version in range(1,SCHEMA_VERSION+1):db.execute("INSERT OR IGNORE INTO gc_schema_migrations VALUES(?,?)",(migration_version,now()))
                 for key, value in DEFAULTS.items(): db.execute("INSERT OR IGNORE INTO gc_settings VALUES(?,?,?)", (key, json.dumps(value), now()))
                 db.commit()
@@ -110,7 +155,10 @@ class Repository:
 
     @property
     def actor(self):
-        """GC_LOCAL_USER_NAME when set (tests, one-off), else the person signed in to NeraVeda, else the stored name."""
+        """The person the web helper acts for (set per request), else GC_LOCAL_USER_NAME when set (tests, one-off),
+        else the person signed in to NeraVeda, else the stored name."""
+        if getattr(self, "acting_as", None):
+            return self.acting_as
         if "GC_LOCAL_USER_NAME" in os.environ:
             return os.getenv("GC_LOCAL_USER_NAME", "").strip() or None
         from suite_services import actor as suite_actor
@@ -180,23 +228,43 @@ class Repository:
                 db.commit(); return cid
             except Exception: db.rollback(); raise
 
-    def update_claim(self, claim_id, **fields):
-        allowed = {"title","equipment_system","defect_description","date_reported","date_submitted","waiting_on","responsible_party_name","next_follow_up_date","promised_dispatch_date","expected_delivery_date","service_attendance_date","rectification_date","priority","notes","assigned_to"}
-        updates = {k:v for k,v in fields.items() if k in allowed}
+    EDITABLE = ("title","equipment_system","defect_description","date_reported","date_submitted","waiting_on","responsible_party_name","next_follow_up_date","promised_dispatch_date","expected_delivery_date","service_attendance_date","rectification_date","priority","notes","assigned_to","next_action","action_since")
+
+    def update_claim(self, claim_id, expected_updated_at=None, reason="", suggestions=(), **fields):
+        """Edit the claim record. A change of action owner is a substantive transition: unless a pending-since date
+        is given with it, the action is pending since today (spec 13). Audit keeps old and new values."""
+        updates = {k:v for k,v in fields.items() if k in self.EDITABLE}
         if not updates: return
+        for key in ("next_action", "title", "equipment_system", "defect_description", "responsible_party_name", "notes"):
+            if key in updates: updates[key] = (updates[key] or "").strip()
+        for key in ("action_since", "next_follow_up_date", "promised_dispatch_date", "expected_delivery_date", "service_attendance_date", "rectification_date", "date_reported", "date_submitted"):
+            if key in updates and not updates[key]: updates[key] = None
         _validate_dates(updates)
         if "waiting_on" in updates and updates["waiting_on"] not in WAITING_ON: raise ValueError("Invalid Waiting On value.")
+        if "priority" in updates and updates["priority"] not in {"LOW","NORMAL","HIGH","URGENT"}: raise ValueError("Priority must be Low, Normal, High or Urgent.")
         stamp=now()
-        with connection(self.root) as db, db:
-            old = db.execute("SELECT * FROM gc_claims WHERE id=?",(claim_id,)).fetchone()
-            if not old: raise ValueError("Claim was not found.")
-            sql=", ".join(f"{k}=?" for k in updates)
-            db.execute(f"UPDATE gc_claims SET {sql},updated_at=?,updated_by=? WHERE id=?",(*updates.values(),stamp,self.actor,claim_id))
-            if "waiting_on" in updates and updates["waiting_on"] != old["waiting_on"]:
-                db.execute("INSERT INTO gc_status_history(claim_id,previous_status,new_status,previous_waiting_on,new_waiting_on,reason,source,changed_at,changed_by) VALUES(?,?,?,?,?,?,?,?,?)",(claim_id,old["current_status"],old["current_status"],old["waiting_on"],updates["waiting_on"],"Waiting On updated","MANUAL",stamp,self.actor))
-            db.execute("INSERT INTO gc_audit_events(claim_id,action,details_json,created_at,created_by) VALUES(?,?,?,?,?)",(claim_id,"claim_updated",json.dumps(updates),stamp,self.actor))
+        with connection(self.root) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                old = db.execute("SELECT * FROM gc_claims WHERE id=?",(claim_id,)).fetchone()
+                if not old: raise ValueError("Claim was not found.")
+                _check_fresh(old, expected_updated_at)
+                owner_changed = "waiting_on" in updates and updates["waiting_on"] != old["waiting_on"]
+                if owner_changed and "action_since" not in updates:
+                    updates["action_since"] = None if updates["waiting_on"] == "NONE" else local_today()
+                changes = {k: {"from": old[k], "to": v} for k, v in updates.items() if old[k] != v}
+                if not changes: db.rollback(); return
+                sql=", ".join(f"{k}=?" for k in changes)
+                db.execute(f"UPDATE gc_claims SET {sql},updated_at=?,updated_by=? WHERE id=?",(*(c["to"] for c in changes.values()),stamp,self.actor,claim_id))
+                if owner_changed:
+                    db.execute("INSERT INTO gc_status_history(claim_id,previous_status,new_status,previous_waiting_on,new_waiting_on,reason,source,changed_at,changed_by) VALUES(?,?,?,?,?,?,?,?,?)",(claim_id,old["current_status"],old["current_status"],old["waiting_on"],updates["waiting_on"],reason.strip() or "Waiting On updated","MANUAL",stamp,self.actor))
+                details = {k: c["to"] for k, c in changes.items()}
+                details.update(changes=changes, reason=reason.strip() or None, suggestions=list(suggestions) or None)
+                db.execute("INSERT INTO gc_audit_events(claim_id,action,details_json,created_at,created_by) VALUES(?,?,?,?,?)",(claim_id,"claim_updated",json.dumps(details),stamp,self.actor))
+                db.commit()
+            except Exception: db.rollback(); raise
 
-    def set_status(self, claim_id, new_status, reason="", override=False, waiting_on=None):
+    def set_status(self, claim_id, new_status, reason="", override=False, waiting_on=None, expected_updated_at=None, keep_action_since=False):
         if new_status not in STATUS: raise ValueError("Unknown lifecycle status.")
         if new_status=="CLOSED": raise ValueError("Use the close action, which requires a closure date and reason.")
         stamp=now()
@@ -205,19 +273,24 @@ class Repository:
             try:
                 old=db.execute("SELECT * FROM gc_claims WHERE id=?",(claim_id,)).fetchone()
                 if not old: raise ValueError("Claim was not found.")
+                _check_fresh(old, expected_updated_at)
                 if old["current_status"] in {"CLOSED","CANCELLED"}: raise ValueError("Reopen a closed claim explicitly before changing its status.")
                 if new_status not in TRANSITIONS[old["current_status"]] and not (override and reason.strip()): raise ValueError("This status transition is not allowed; provide a reason for a manual override.")
                 if override and not reason.strip(): raise ValueError("A reason is required for a manual override.")
                 waiting=waiting_on or old["waiting_on"]
                 if waiting not in WAITING_ON: raise ValueError("Unknown Waiting On value.")
                 db.execute("UPDATE gc_claims SET current_status=?,waiting_on=?,updated_at=?,updated_by=? WHERE id=?",(new_status,waiting,stamp,self.actor,claim_id))
+                # Entering a new controlled workflow state starts a new action period (spec 13), unless the person
+                # confirmed the pending-since date separately (guided set-up) or nobody holds the action.
+                if not keep_action_since and new_status != old["current_status"] and waiting != "NONE":
+                    db.execute("UPDATE gc_claims SET action_since=? WHERE id=?",(local_today(),claim_id))
                 db.execute("INSERT INTO gc_status_history(claim_id,previous_status,new_status,previous_waiting_on,new_waiting_on,reason,source,changed_at,changed_by) VALUES(?,?,?,?,?,?,?,?,?)",(claim_id,old["current_status"],new_status,old["waiting_on"],waiting,reason or "Status updated","MANUAL",stamp,self.actor))
                 db.execute("INSERT INTO gc_timeline_events(claim_id,event_type,title,description,event_date,created_at,created_by) VALUES(?,?,?,?,?,?,?)",(claim_id,"STATUS_CHANGED",f"Status: {LABELS[new_status]}",reason,stamp,stamp,self.actor))
                 db.execute("INSERT INTO gc_audit_events(claim_id,action,details_json,created_at,created_by) VALUES(?,?,?,?,?)",(claim_id,"status_changed",json.dumps({"from":old["current_status"],"to":new_status,"reason":reason}),stamp,self.actor))
                 db.commit()
             except Exception: db.rollback(); raise
 
-    def close_claim(self, claim_id, closure_date, reason):
+    def close_claim(self, claim_id, closure_date, reason, expected_updated_at=None):
         if not closure_date or not reason.strip(): raise ValueError("Closure date and closure reason are required.")
         _validate_dates({"closure_date":closure_date})
         stamp=now()
@@ -226,6 +299,7 @@ class Repository:
             try:
                 old=db.execute("SELECT * FROM gc_claims WHERE id=?",(claim_id,)).fetchone()
                 if not old:raise ValueError("Claim was not found.")
+                _check_fresh(old, expected_updated_at)
                 if old["current_status"] in {"CLOSED","CANCELLED"}:raise ValueError("Closed or cancelled claims cannot be closed again.")
                 db.execute("UPDATE gc_claims SET current_status='CLOSED',closure_date=?,updated_at=?,updated_by=? WHERE id=?",(closure_date,stamp,self.actor,claim_id))
                 db.execute("INSERT INTO gc_status_history(claim_id,previous_status,new_status,previous_waiting_on,new_waiting_on,reason,source,changed_at,changed_by) VALUES(?,?,?,?,?,?,?,?,?)",(claim_id,old["current_status"],"CLOSED",old["waiting_on"],old["waiting_on"],reason,"MANUAL",stamp,self.actor))
@@ -233,7 +307,7 @@ class Repository:
                 db.execute("INSERT INTO gc_audit_events(claim_id,action,details_json,created_at,created_by) VALUES(?,?,?,?,?)",(claim_id,"claim_closed",json.dumps({"closure_date":closure_date,"reason":reason}),stamp,self.actor));db.commit()
             except Exception:db.rollback();raise
 
-    def reopen_claim(self, claim_id, status, reason):
+    def reopen_claim(self, claim_id, status, reason, expected_updated_at=None):
         if not reason.strip(): raise ValueError("A reopening reason is required.")
         if status not in STATUS or status in {"CLOSED","CANCELLED"}: raise ValueError("Choose an active status to reopen into.")
         stamp=now()
@@ -242,6 +316,7 @@ class Repository:
             try:
                 old=db.execute("SELECT * FROM gc_claims WHERE id=?",(claim_id,)).fetchone()
                 if not old or old["current_status"]!="CLOSED": raise ValueError("Only a closed claim can be reopened.")
+                _check_fresh(old, expected_updated_at)
                 db.execute("UPDATE gc_claims SET current_status=?,closure_date=NULL,reopened_count=reopened_count+1,updated_at=?,updated_by=? WHERE id=?",(status,stamp,self.actor,claim_id))
                 db.execute("INSERT INTO gc_status_history(claim_id,previous_status,new_status,previous_waiting_on,new_waiting_on,reason,source,changed_at,changed_by) VALUES(?,?,?,?,?,?,?,?,?)",(claim_id,"CLOSED",status,old["waiting_on"],old["waiting_on"],reason,"REOPENED",stamp,self.actor))
                 db.execute("INSERT INTO gc_timeline_events(claim_id,event_type,title,description,event_date,created_at,created_by) VALUES(?,?,?,?,?,?,?)",(claim_id,"REOPENED","Claim reopened",reason,stamp,stamp,self.actor))
@@ -267,6 +342,138 @@ class Repository:
                 db.execute("INSERT INTO gc_audit_events(claim_id,action,details_json,created_at,created_by) VALUES(?,?,?,?,?)",(claim_id,"status_undone",json.dumps({"restored_status":latest["previous_status"],"reason":reason}),stamp,self.actor));db.commit()
             except Exception:db.rollback();raise
 
+    def record_suggestions(self, claim_id, decisions):
+        """Keep a person's decision on email suggestions so they are not shown again. decisions: dicts with key, kind,
+        proposed, evidence_email_id, quote and status ACCEPTED / CHANGED / REJECTED."""
+        stamp=now()
+        with connection(self.root) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                self._record_suggestions(db, claim_id, decisions, stamp)
+                db.commit()
+            except Exception: db.rollback(); raise
+
+    def _record_suggestions(self, db, claim_id, decisions, stamp):
+        for d in decisions:
+            if d["status"] not in {"ACCEPTED","CHANGED","REJECTED"}: raise ValueError("Unknown suggestion decision.")
+            db.execute("INSERT INTO gc_suggestions(claim_id,suggestion_key,kind,proposed_json,evidence_email_id,quote,status,created_at,reviewed_at,reviewed_by) VALUES(?,?,?,?,?,?,?,?,?,?) "
+                       "ON CONFLICT(suggestion_key) DO UPDATE SET status=excluded.status,reviewed_at=excluded.reviewed_at,reviewed_by=excluded.reviewed_by",
+                       (claim_id,d["key"],d["kind"],json.dumps(d.get("proposed") or {}),d.get("evidence_email_id"),d.get("quote") or "",d["status"],stamp,stamp,self.actor))
+            db.execute("INSERT INTO gc_audit_events(claim_id,email_id,action,details_json,created_at,created_by) VALUES(?,?,?,?,?,?)",
+                       (claim_id,d.get("evidence_email_id"),"suggestion_"+d["status"].lower(),json.dumps({"key":d["key"],"kind":d["kind"],"proposed":d.get("proposed"),"quote":d.get("quote")}),stamp,self.actor))
+
+    def confirm_setup(self, claim_id, fields, status=None, decisions=(), reason="Register set-up from correspondence", expected_updated_at=None):
+        """Guided set-up: the confirmed record values (and optionally the stage) in ONE transaction, with status
+        history, a Claim Story event, audit of old and new values, and the suggestion decisions. The person's
+        confirmed pending-since date is kept (a stage change in the same step does not reset it)."""
+        values = {k:v for k,v in fields.items() if k in {"title","equipment_system","waiting_on","action_since","next_action","responsible_party_name","next_follow_up_date"}}
+        for key in ("title","equipment_system","next_action","responsible_party_name"):
+            if key in values: values[key]=(values[key] or "").strip()
+        for key in ("action_since","next_follow_up_date"):
+            if key in values and not values[key]: values[key]=None
+        _validate_dates(values)
+        if values.get("waiting_on","NONE") not in WAITING_ON: raise ValueError("Unknown Waiting On value.")
+        if status is not None and (status not in STATUS or status=="CLOSED"): raise ValueError("Choose an open stage; close a claim with the close action.")
+        if values.get("waiting_on") not in (None,"NONE") and not values.get("action_since"): raise ValueError("Give the date the action became pending with this owner.")
+        if values.get("action_since") and values["action_since"]>local_today(): raise ValueError("The pending-since date cannot be in the future.")
+        stamp=now()
+        with connection(self.root) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                old=db.execute("SELECT * FROM gc_claims WHERE id=?",(claim_id,)).fetchone()
+                if not old: raise ValueError("Claim was not found.")
+                _check_fresh(old, expected_updated_at)
+                if old["current_status"] in {"CLOSED","CANCELLED"}: raise ValueError("This claim is closed; reopen it first.")
+                new_status=status or old["current_status"]
+                changes={k:{"from":old[k],"to":v} for k,v in values.items() if old[k]!=v}
+                if new_status!=old["current_status"]: changes["current_status"]={"from":old["current_status"],"to":new_status}
+                if changes:
+                    sql=", ".join(f"{k}=?" for k in changes)
+                    db.execute(f"UPDATE gc_claims SET {sql},updated_at=?,updated_by=? WHERE id=?",(*(c["to"] for c in changes.values()),stamp,self.actor,claim_id))
+                    waiting=values.get("waiting_on",old["waiting_on"])
+                    if new_status!=old["current_status"] or waiting!=old["waiting_on"]:
+                        db.execute("INSERT INTO gc_status_history(claim_id,previous_status,new_status,previous_waiting_on,new_waiting_on,reason,source,changed_at,changed_by) VALUES(?,?,?,?,?,?,?,?,?)",
+                                   (claim_id,old["current_status"],new_status,old["waiting_on"],waiting,reason,"MANUAL",stamp,self.actor))
+                    if new_status!=old["current_status"]:
+                        db.execute("INSERT INTO gc_timeline_events(claim_id,event_type,title,description,event_date,created_at,created_by) VALUES(?,?,?,?,?,?,?)",
+                                   (claim_id,"STATUS_CHANGED",f"Status: {LABELS[new_status]}",reason,stamp,stamp,self.actor))
+                    details={k:c["to"] for k,c in changes.items()}
+                    details.update(changes=changes,reason=reason,suggestions=[d["key"] for d in decisions] or None)
+                    db.execute("INSERT INTO gc_audit_events(claim_id,action,details_json,created_at,created_by) VALUES(?,?,?,?,?)",(claim_id,"claim_set_up",json.dumps(details),stamp,self.actor))
+                self._record_suggestions(db, claim_id, decisions, stamp)
+                db.commit()
+            except Exception: db.rollback(); raise
+
+    def link_email(self, email_id, claim_id, reason):
+        """Add a claim to an email's links (an email may concern several claims). Never moves an existing link."""
+        if not (reason or "").strip(): raise ValueError("A reason is required to link an email.")
+        stamp=now()
+        with connection(self.root) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                if not db.execute("SELECT 1 FROM gc_emails WHERE id=?",(email_id,)).fetchone(): raise ValueError("Email was not found.")
+                if not db.execute("SELECT 1 FROM gc_claims WHERE id=?",(claim_id,)).fetchone(): raise ValueError("Claim was not found.")
+                linked=db.execute("SELECT 1 FROM gc_emails WHERE id=? AND claim_id=? UNION SELECT 1 FROM gc_email_claim_links WHERE email_id=? AND claim_id=?",(email_id,claim_id,email_id,claim_id)).fetchone()
+                if not linked:
+                    db.execute("INSERT INTO gc_email_claim_links(email_id,claim_id,linked_at,linked_by) VALUES(?,?,?,?)",(email_id,claim_id,stamp,self.actor))
+                    db.execute("INSERT INTO gc_audit_events(claim_id,email_id,action,details_json,created_at,created_by) VALUES(?,?,?,?,?,?)",(claim_id,email_id,"email_linked",json.dumps({"reason":reason.strip()}),stamp,self.actor))
+                db.commit()
+            except Exception: db.rollback(); raise
+
+    def snooze(self, claim_id, until, reason):
+        """Spec 22: hides the claim from the Next Best Action only. Due dates, age, overdue and totals do not change."""
+        if not (reason or "").strip(): raise ValueError("A snooze reason is required.")
+        _validate_dates({"snooze_until_date": until})
+        if not until or until<=local_today(): raise ValueError("Snooze until a date after today.")
+        stamp=now()
+        with connection(self.root) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                if not db.execute("SELECT 1 FROM gc_claims WHERE id=? AND current_status NOT IN ('CLOSED','CANCELLED')",(claim_id,)).fetchone(): raise ValueError("Only an open claim can be snoozed.")
+                db.execute("UPDATE gc_snoozes SET cleared_at=?,cleared_by=? WHERE claim_id=? AND cleared_at IS NULL",(stamp,self.actor,claim_id))
+                db.execute("INSERT INTO gc_snoozes(claim_id,snoozed_until,reason,created_by,created_at) VALUES(?,?,?,?,?)",(claim_id,until,reason.strip(),self.actor,stamp))
+                db.execute("INSERT INTO gc_audit_events(claim_id,action,details_json,created_at,created_by) VALUES(?,?,?,?,?)",(claim_id,"claim_snoozed",json.dumps({"until":until,"reason":reason.strip()}),stamp,self.actor))
+                db.commit()
+            except Exception: db.rollback(); raise
+
+    def clear_snooze(self, claim_id):
+        stamp=now()
+        with connection(self.root) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                cleared=db.execute("UPDATE gc_snoozes SET cleared_at=?,cleared_by=? WHERE claim_id=? AND cleared_at IS NULL",(stamp,self.actor,claim_id)).rowcount
+                if cleared:
+                    db.execute("INSERT INTO gc_audit_events(claim_id,action,details_json,created_at,created_by) VALUES(?,?,?,?,?)",(claim_id,"snooze_cleared","{}",stamp,self.actor))
+                db.commit()
+            except Exception: db.rollback(); raise
+
+    def mark_dashboard_reviewed(self, user):
+        """Spec 20: when this person last reviewed the Command Centre developments (never set by a sync)."""
+        if not (user or "").strip(): raise ValueError("The person reviewing is not known.")
+        with connection(self.root) as db, db:
+            db.execute("INSERT INTO gc_review_marks(user_name,scope,scope_key,reviewed_at) VALUES(?,?,?,?) ON CONFLICT(user_name,scope,scope_key) DO UPDATE SET reviewed_at=excluded.reviewed_at",(user.strip(),"dashboard","",now()))
+
+    @staticmethod
+    def _stored_email(db, dedupe, internet):
+        prior=db.execute("SELECT id,claim_id FROM gc_emails WHERE dedupe_key=?",(dedupe,)).fetchone()
+        if not prior and str(internet or "").strip():
+            # The same email has a different key per route (.msg archive, Graph); its Internet Message ID is shared.
+            prior=db.execute("SELECT id,claim_id FROM gc_emails WHERE internet_message_id=? COLLATE NOCASE ORDER BY id LIMIT 1",(str(internet).strip(),)).fetchone()
+        return prior
+
+    def tracked_vessel_ids(self):
+        return tracked_ids(self.settings().get("tracked_vessels"),self.vessels(False))
+
+    def match_vessel(self, subject, vessels):
+        settings=self.settings()
+        return identify_vessel(subject,vessels,auto_threshold=settings.get("vessel_auto_match_threshold"),review_threshold=settings.get("vessel_review_threshold"),margin=settings.get("vessel_match_margin"))
+
+    def has_email(self, message):
+        """Whether a message that has a Graph or Internet Message ID is already stored."""
+        internet=message.get("internet_message_id")
+        with connection(self.root) as db:
+            return self._stored_email(db,_dedupe_key(message.get("graph_immutable_id") or message.get("id") or internet),internet) is not None
+
     def import_message(self, message):
         """Idempotently import Outlook/fixture evidence, always matching from subject alone."""
         subject=str(message.get("subject") or "").strip()
@@ -277,10 +484,10 @@ class Repository:
         stable=immutable or internet or message.get("graph_message_id") or ""
         folder=str(message.get("mailbox_folder") or message.get("folder") or "Inbox")
         direction="OUTGOING" if folder.casefold() in {"sent items","sent","outbox"} else str(message.get("direction") or "INCOMING").upper()
-        dedupe="id:"+str(stable) if stable else "sha:"+__import__("hashlib").sha256((folder+"\0"+subject+"\0"+str(message.get("message_datetime") or "")+"\0"+str(message.get("sender_address") or "")).encode()).hexdigest()
+        dedupe=_dedupe_key(stable) if stable else "sha:"+__import__("hashlib").sha256((folder+"\0"+subject+"\0"+str(message.get("message_datetime") or "")+"\0"+str(message.get("sender_address") or "")).encode()).hexdigest()
         stamp=now()
         with connection(self.root) as db:
-            prior=db.execute("SELECT id,claim_id FROM gc_emails WHERE dedupe_key=?",(dedupe,)).fetchone()
+            prior=self._stored_email(db,dedupe,internet)
             if prior: return {"duplicate":True,"email_id":prior["id"],"claim_id":prior["claim_id"]}
             settings={r["key"]:json.loads(r["value"]) for r in db.execute("SELECT key,value FROM gc_settings")}
             match=identify_vessel(subject,[dict(r) for r in db.execute("SELECT v.id,v.name FROM vessels v LEFT JOIN gc_vessel_details d ON d.vessel_id=v.id WHERE COALESCE(d.active,1)=1 ORDER BY v.name")],auto_threshold=settings.get("vessel_auto_match_threshold"),review_threshold=settings.get("vessel_review_threshold"),margin=settings.get("vessel_match_margin"))
@@ -310,7 +517,7 @@ class Repository:
 
     def reviews(self, open_only=True):
         sql="SELECT q.*,e.subject,e.direction,e.body_preview,e.detected_gc_numbers_json,e.matched_vessel_id,v.name suggested_vessel FROM gc_review_queue q JOIN gc_emails e ON e.id=q.email_id LEFT JOIN vessels v ON v.id=q.suggested_vessel_id"
-        if open_only: sql+=" WHERE q.status='OPEN'"
+        if open_only: sql+=" WHERE q.status='OPEN' AND "+tracked_sql("q.suggested_vessel_id",self.tracked_vessel_ids())
         sql+=" ORDER BY q.created_at"
         with connection(self.root) as db:return [dict(r) for r in db.execute(sql)]
 
@@ -448,10 +655,19 @@ class Repository:
         values["graph_sync_interval_minutes"]=int(os.getenv("GC_GRAPH_SYNC_INTERVAL_MINUTES",values.get("graph_sync_interval_minutes",5)))
         return values
     def save_settings(self, values):
-        allowed=set(DEFAULTS)
+        allowed=set(DEFAULTS); before=self.tracked_vessel_ids()
+        if values.get("tracked_vessels"):
+            known={normalise_name(v["name"]):v["name"] for v in self.vessels()}
+            unknown=[name for name in values["tracked_vessels"] if normalise_name(name) not in known]
+            if unknown: raise ValueError("Not in the vessel list: "+", ".join(unknown))
+            values={**values,"tracked_vessels":[known[normalise_name(name)] for name in values["tracked_vessels"]]}
         for k,v in values.items():
             if k not in allowed: continue
             with connection(self.root) as db, db: db.execute("INSERT INTO gc_settings VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(k,json.dumps(v),now()))
+        after=self.tracked_vessel_ids()
+        if before is not None and (after is None or after-before):
+            # A vessel was added: its earlier emails were passed over, so the next sync reads every folder again.
+            with connection(self.root) as db, db: db.execute("UPDATE gc_outlook_sync_state SET delta_link=NULL")
     def sync_status(self):
         with connection(self.root) as db:return [dict(r) for r in db.execute("SELECT folder_name,last_attempt_at,last_success_at,last_error,items_processed FROM gc_outlook_sync_state ORDER BY folder_name")]
     def delta_state(self, folder):
@@ -483,6 +699,16 @@ class Repository:
             if "CLOSURE_PENDING" in flags: result["closure_pending"]+=1
             if "GUARANTEE_EXPIRY_RISK" in flags: result["guarantee_expiry_risks"]+=1
         return result
+    def email_summary(self, today=None):
+        """Email counts for the dashboard, for the tracked vessels. Days are this PC's local days; imported_at is stored in UTC."""
+        tracked=self.tracked_vessel_ids()
+        with connection(self.root) as db:
+            row=db.execute(f"""SELECT COUNT(*) stored,
+                COALESCE(SUM(claim_id IS NOT NULL OR EXISTS(SELECT 1 FROM gc_email_claim_links l WHERE l.email_id=gc_emails.id)),0) linked,
+                COALESCE(SUM(date(imported_at,'localtime')=?),0) added_today,
+                (SELECT COUNT(*) FROM gc_review_queue WHERE status='OPEN' AND {tracked_sql("suggested_vessel_id",tracked)}) to_review
+                FROM gc_emails WHERE claim_id IS NOT NULL OR {tracked_sql("matched_vessel_id",tracked)}""",(today or date.today().isoformat(),)).fetchone()
+            return dict(row)
     def vessel(self,vessel_id):
         return next((v for v in self.vessels(False) if v["id"]==vessel_id),{})
     def attention(self):
