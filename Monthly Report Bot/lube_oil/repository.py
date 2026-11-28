@@ -65,8 +65,11 @@ TANK_CATEGORIES = {
     "ME_CYLINDER_OIL_LOW_BN": "Cylinder oil · Low TBN",
     "AE_SYSTEM_OIL": "System oil · AE",
 }
-# Vessel parameters used by stock-cover rules. Values are versioned by effective date.
+# Vessel parameters used by the safety-margin rules. Values are versioned by effective date.
+# ME_SUMP_CAPACITY drives the ME system oil reserve (one full charge = 80% of it).
+# ME_SYSTEM_OIL_FULL_CHARGE is retired from the screens; kept so older history stays readable.
 PARAMETERS = {
+    "ME_SUMP_CAPACITY": ("ME sump capacity", "L"),
     "ME_SYSTEM_OIL_FULL_CHARGE": ("ME system oil · one full charge", "L"),
 }
 
@@ -134,7 +137,9 @@ class Repository:
                 db.execute("INSERT INTO source_occurrences(file_id,source_path,seen_at,outcome) VALUES(?,?,?,?)",
                            (existing[0], str(path), now(), "duplicate"))
                 db.commit()
-                return dict(filename=path.name, status="Duplicate", detail="Original already archived; no duplicate report created.")
+                report = db.execute("SELECT id FROM monthly_reports WHERE file_id=? ORDER BY id DESC LIMIT 1", (existing[0],)).fetchone()
+                return dict(filename=path.name, status="Duplicate", detail="Original already archived; no duplicate report created.",
+                            report_id=report[0] if report else None)
             if existing:
                 # The same file failed before and never produced a report: read it again (the parser may have been fixed).
                 file_id = existing[0]
@@ -148,7 +153,9 @@ class Repository:
                        (file_id, VERSION, status, detail if status == "Failed" else None, now()))
             db.execute("INSERT INTO source_occurrences(file_id,source_path,seen_at,outcome) VALUES(?,?,?,?)", (file_id, str(path), now(), status))
             db.commit()
-            return dict(filename=path.name, status=status, detail=detail)
+            report = db.execute("SELECT id FROM monthly_reports WHERE file_id=? ORDER BY id DESC LIMIT 1", (file_id,)).fetchone()
+            return dict(filename=path.name, status=status, detail=detail,
+                        report_id=report[0] if report else None)
 
     @staticmethod
     def _failed_without_report(db, file_id):
@@ -181,6 +188,9 @@ class Repository:
                  payload["source_status"], payload["validation_status"], json.dumps(payload, ensure_ascii=False))).lastrowid
             self._audit(db, report_id, "imported", "Official vessel submission imported.")
             detail = f"{payload['vessel']} · {payload['month']} · {payload['validation_status']}"
+            for issue in payload["issues"]:
+                if issue["code"] == "filename_period_mismatch":
+                    detail += " · " + issue["detail"]
             if self._usable(vessel_id, payload["month"], payload["validation_status"]):
                 self._activate(db, report_id, vessel_id, payload["month"])
                 status = "Imported"
@@ -564,7 +574,7 @@ class Repository:
             rows.append(dict(vessel=vessel,
                              basis={b["oil_category"]: b for b in self.budget_basis(vessel, year)},
                              prices={p["oil_category"]: p for p in self.reference_prices(vessel, year) if not p.get("oil_grade")},
-                             charge=self.parameter(vessel, "ME_SYSTEM_OIL_FULL_CHARGE")))
+                             sump=self.parameter(vessel, "ME_SUMP_CAPACITY")))
         return rows
 
     def tanks(self, vessel=None, current_only=True):

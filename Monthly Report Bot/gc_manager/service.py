@@ -220,6 +220,27 @@ def _unsnooze(repo, claim_id):
     return _detail(repo, claim_id)
 
 
+def _review_resolve(repo, review_id, action, vessel_id, claim_id, register, link_matching, notes):
+    open_ids = {r["id"] for r in repo.reviews(True)}
+    if review_id not in open_ids:
+        raise RequestError("conflict", "This email was already resolved (perhaps in the desktop window). Reload the Review Queue.")
+    linked = repo.resolve_review(review_id, action, notes=notes, vessel_id=vessel_id, claim_id=claim_id, register=register, link_matching=link_matching)
+    return {"resolved": True, "linked_emails": linked if isinstance(linked, int) and not isinstance(linked, bool) else (1 if action == "link" else 0)}
+
+
+def _review_multiple(repo, review_id, claim_ids, notes):
+    if review_id not in {r["id"] for r in repo.reviews(True)}:
+        raise RequestError("conflict", "This email was already resolved. Reload the Review Queue.")
+    repo.resolve_multiple_gc_review(review_id, claim_ids, notes)
+    return {"resolved": True, "linked_emails": len(claim_ids)}
+
+
+def _id_list(value, name):
+    if not isinstance(value, list) or not 0 < len(value) <= 20:
+        raise RequestError("bad_request", f"{name} must be a list of claim ids.")
+    return [_int_id(v, name) for v in value]
+
+
 def _mark_reviewed(repo):
     repo.mark_dashboard_reviewed(repo.actor)
     return {"reviewed": True}
@@ -350,6 +371,12 @@ COMMANDS = {
                            "decision": (_choice(("ACCEPTED", "REJECTED")), ...), "reason": (_long_text, "")},
                           _write(web_actions.decide)),
     "review.mark": ({"actor": (_required_text, ...)}, _write(_mark_reviewed)),
+    # Review Queue (unmatched emails), with the desktop's own resolution rules and audit.
+    "review.resolve": ({"actor": (_required_text, ...), "review_id": (_int_id, ...), "action": (_choice(("link", "irrelevant")), ...),
+                        "vessel_id": (_optional_id, None), "claim_id": (_optional_id, None), "register": (_flag, False),
+                        "link_matching": (_flag, False), "notes": (_long_text, "")}, _write(_review_resolve)),
+    "review.resolve_multiple": ({"actor": (_required_text, ...), "review_id": (_int_id, ...), "claim_ids": (_id_list, ...),
+                                 "notes": (_long_text, ...)}, _write(_review_multiple)),
     # Outlook sync (Phase 5): the true state, "Sync now", and a Microsoft device sign-in shown on the page.
     "sync.state": ({}, _sync_state),
     "sync.run": ({"actor": (_required_text, ...)}, _sync_run),

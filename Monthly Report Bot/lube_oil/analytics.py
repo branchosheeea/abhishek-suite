@@ -997,9 +997,15 @@ def monthly_analysis(reports, month, windows=(3, 6, 12)):
     }
 
 
-# Provisional stock-cover thresholds in months of normal consumption. Not approved company policy.
-COVER_THRESHOLDS = {"Critical": 1, "Low": 3, "Planning": 6}
-LOW_COVER_MONTHS = COVER_THRESHOLDS["Planning"]
+# Safety margin (company rule, 2026-11-26): months of normal consumption held in storage above any reserve.
+# ME system oil keeps one full charge (80% of the ME sump capacity) as a reserve that is never counted as stock,
+# plus at least ME_MINIMUM_MONTHS of consumption. Below ALARM_MONTHS raise an alarm; below DANGER_MONTHS store now.
+FULL_CHARGE_FRACTION = 0.8
+ME_MINIMUM_MONTHS = 4
+ALARM_MONTHS = 3
+DANGER_MONTHS = 1
+DAYS_PER_MONTH = 30.4
+ME_GROUP = "System oil · ME"
 AE_GROUP = "System oil · AE"
 
 
@@ -1073,19 +1079,32 @@ def tank_fill(storage_rob, tanks):
                 minimum_rob=sum(t["minimum_rob"] for t in tanks if t.get("minimum_rob") is not None) or None)
 
 
-def cover_status(cover):
-    if cover is None:
+def margin_status(margin, group=None, reserve_known=True):
+    """Safety-margin band. ME system oil also has a "Below minimum" band (company minimum is 4 months)."""
+    if group == ME_GROUP and not reserve_known:
+        return "Sump capacity not set"
+    if margin is None:
         return "No data"
-    for status in ("Critical", "Low", "Planning"):
-        if cover < COVER_THRESHOLDS[status]:
-            return status
-    return "Normal"
+    if margin < DANGER_MONTHS:
+        return "Danger"
+    if margin < ALARM_MONTHS:
+        return "Alarm"
+    if group == ME_GROUP and margin < ME_MINIMUM_MONTHS:
+        return "Below minimum"
+    return "OK"
 
 
-def dashboard(reports, vessel, end_month, months=12, budget_monthly=None):
+def _month_end(month):
+    year, number = int(month[:4]), int(month[5:7])
+    following = date(year + number // 12, number % 12 + 1, 1)
+    return date.fromordinal(following.toordinal() - 1)
+
+
+def dashboard(reports, vessel, end_month, months=12, budget_monthly=None, me_sump_capacity=None):
     """Overview figures for one vessel from the reports in use. Gaps stay None, never zero.
 
-    budget_monthly: optional {group: approved budget litres per month}, the last-resort stock-cover rate.
+    budget_monthly: optional {group: approved budget litres per month}, the last-resort safety-margin rate.
+    me_sump_capacity: ME sump capacity in litres; one full charge (80%) is held back as the ME system oil reserve.
     """
     window = [month_shift(end_month, offset) for offset in range(1 - months, 1)]
     vessel_months = {
@@ -1105,6 +1124,9 @@ def dashboard(reports, vessel, end_month, months=12, budget_monthly=None):
 
     def normal_consumption(group, month):
         report = vessel_months.get(month)
+        if group == ME_GROUP:
+            # Routine use (column D) only: a one-off sump change/loss is what the reserve charge is there for.
+            return _group_field(report, group, "operating")
         if group == AE_GROUP:
             split = ae_month_breakdown(report, vessel_months.get(month_shift(month, -1)))
             return split and split["normal"]
@@ -1120,16 +1142,26 @@ def dashboard(reports, vessel, end_month, months=12, budget_monthly=None):
         received = available(_group_field(r, group, "receipts") for r in in_use)
         closing = _group_field(latest, group, "closing")
         last12 = available(monthly_consumption(vessel_months.get(month_shift(end_month, -i)), group) for i in range(12))
-        # Stock-cover rate hierarchy: clean 6-month, then 3-month normal average, then the approved budget rate.
-        cover_rate, cover_basis = None, None
+        # Safety-margin rate hierarchy: clean 6-month, then 3-month normal average, then the approved budget rate.
+        margin_rate, margin_basis = None, None
         for span in (6, 3):
             values = [normal_consumption(group, month_shift(end_month, -i)) for i in range(span)]
             if all(v is not None for v in values):
-                cover_rate, cover_basis = sum(values) / span, f"{span}-month normal average"
+                margin_rate, margin_basis = sum(values) / span, f"{span}-month normal average"
                 break
-        if cover_rate is None and budget_monthly.get(group):
-            cover_rate, cover_basis = budget_monthly[group], "approved budget rate"
-        cover = closing / cover_rate if closing is not None and cover_rate else None
+        if margin_rate is None and budget_monthly.get(group):
+            margin_rate, margin_basis = budget_monthly[group], "approved budget rate"
+        is_me = group == ME_GROUP
+        reserve = round(me_sump_capacity * FULL_CHARGE_FRACTION, 3) if is_me and me_sump_capacity else None
+        reserve_known = not is_me or reserve is not None
+        margin = margin_days = reserve_date = minimum_rob = order_to_minimum = None
+        if closing is not None and margin_rate and reserve_known:
+            margin = (closing - (reserve or 0)) / margin_rate
+            margin_days = margin * DAYS_PER_MONTH
+            reserve_date = date.fromordinal(_month_end(latest["month"]).toordinal() + math.floor(margin_days))
+        if is_me and reserve is not None and margin_rate:
+            minimum_rob = reserve + ME_MINIMUM_MONTHS * margin_rate
+            order_to_minimum = max(0.0, minimum_rob - closing) if closing is not None else None
         rate_field = RATE_FIELD.get(group)
         rates = [metric(r, "ME", rate_field) if r and rate_field else None for r in in_use]
         average12 = sum(last12) / len(last12) if last12 else None
@@ -1149,7 +1181,9 @@ def dashboard(reports, vessel, end_month, months=12, budget_monthly=None):
             if oil_group(o.get("category")) == group and o.get("grade")
         ) or "Grade not stated"
         grades.append(dict(
-            group=group, grade=grade, closing=closing, cover=cover, cover_basis=cover_basis, cover_rate=cover_rate,
+            group=group, grade=grade, closing=closing, margin=margin, margin_basis=margin_basis, margin_rate=margin_rate,
+            margin_days=margin_days, reserve_date=reserve_date, reserve=reserve, minimum_rob=minimum_rob,
+            order_to_minimum=order_to_minimum,
             consumption=round(sum(available(used)), 3) if available(used) else None,
             consumption_months=len(available(used)), used_series=used, closing_series=closing_series,
             latest_used=used[-1], latest_rate=rates[-1], average12=average12, average12_months=len(last12),
@@ -1157,7 +1191,7 @@ def dashboard(reports, vessel, end_month, months=12, budget_monthly=None):
             opening=_group_field(first, group, "opening"),
             received=round(sum(received), 3) if received else None,
             withdrawn=round(sum(available(withdrawn)), 3) if available(withdrawn) else None,
-            status=cover_status(cover),
+            status=margin_status(margin, group, reserve_known),
         ))
 
     events, seen = [], set()

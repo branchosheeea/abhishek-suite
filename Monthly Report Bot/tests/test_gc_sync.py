@@ -170,5 +170,34 @@ class SyncTests(unittest.TestCase):
         service._runner = None
 
 
+class RollbackTests(unittest.TestCase):
+    """Phase 6: going back to the code before the web Command Centre keeps every record."""
+
+    def test_prepare_backs_up_and_marks_version_2_and_the_new_code_restores_it(self):
+        import sqlite3
+        from gc_manager import rollback
+        from gc_manager.repository import SCHEMA_VERSION
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"GC_LOCAL_USER_NAME": "tester"}):
+            repo = Repository(folder)
+            vessel = next(v["id"] for v in repo.vessels() if v["name"] == "DHT IMPALA")
+            claim = repo.create_claim(vessel, "GC-014")
+            repo.update_claim(claim, waiting_on="SHIPYARD", next_action="Await report")
+            self.assertEqual(rollback.main(["--data-root", folder]), 1)  # without --yes nothing happens
+            backup = rollback.prepare(folder)
+            self.assertTrue(backup.is_file())
+            db = sqlite3.connect(Path(folder) / "suite.sqlite3")
+            try:
+                self.assertEqual(db.execute("SELECT MAX(version) FROM gc_schema_migrations").fetchone()[0], 2)
+                self.assertEqual(db.execute("SELECT waiting_on, next_action FROM gc_claims").fetchall(), [("SHIPYARD", "Await report")])
+            finally:
+                db.close()
+            Repository(folder)  # the current code again: marker back, data kept
+            db = sqlite3.connect(Path(folder) / "suite.sqlite3")
+            try:
+                self.assertEqual(db.execute("SELECT MAX(version) FROM gc_schema_migrations").fetchone()[0], SCHEMA_VERSION)
+            finally:
+                db.close()
+
+
 if __name__ == "__main__":
     unittest.main()

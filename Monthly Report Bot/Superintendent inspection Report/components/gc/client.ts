@@ -111,7 +111,12 @@ export type ClaimDetail = {
 export type ReviewItem = {
   id: number; type: string; reason: string; created_at: string; vessel_known: boolean; email_id: number; subject: string
   direction: string; body_preview: string; gc_numbers: string[]; message_datetime: string | null
+  proposal:
+    | { action: "LINK" | "REGISTER"; gc_number: string; claim_id: number | null; same_gc_emails: number }
+    | { action: "MULTIPLE"; claims: { id: number; gc_number: string }[]; missing: string[] }
+    | null
 }
+export type ReviewData = { vessel: Vessel | null; items: ReviewItem[]; claims: { id: number; gc_number: string; title: string | null }[] }
 
 export const API = "/api/gc"
 

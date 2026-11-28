@@ -1,0 +1,10 @@
+{
+  "name": "me-dump-viewer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline viewer for MAN B&W ME-ECS CCU burst-log dump files (.dat)",
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\"",
+    "build": "python build.py"
+  }
+}

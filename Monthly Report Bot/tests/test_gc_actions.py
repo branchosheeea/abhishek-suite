@@ -148,6 +148,28 @@ class WebActionTests(unittest.TestCase):
         self.assertIsNotNone(overview["review_state"]["last_dashboard_review_at"])
         self.assertTrue(overview["developments"]["since_review"])
 
+    def test_review_queue_register_and_link_with_the_same_gc_emails(self):
+        for n in ("r1", "r2"):
+            self.repo.import_message({"id": n, "subject": "DHT Impala - X / GC-040 - Cooling pump", "sender_address": "yard@yard.example",
+                                      "body": "New defect.", "message_datetime": "2026-11-2%sT03:00:00Z" % n[-1]})
+        items = views.reviews(self.repo)["items"]
+        first = next(i for i in items if i["gc_numbers"] == ["GC-040"])
+        self.assertEqual((first["proposal"]["action"], first["proposal"]["same_gc_emails"]), ("REGISTER", 1))
+        reply = self.ask("review.resolve", actor=ME, review_id=first["id"], action="link", register=True, vessel_id=self.vessel, link_matching=True)
+        self.assertEqual(reply["result"], {"resolved": True, "linked_emails": 2})
+        claim = next(c for c in self.repo.claims() if c["gc_number"] == "GC-040")
+        self.assertEqual((claim["created_by"], len(self.repo.emails(claim["id"]))), (ME, 2))
+        self.assertFalse([i for i in views.reviews(self.repo)["items"] if i["gc_numbers"] == ["GC-040"]])
+        again = self.ask("review.resolve", actor=ME, review_id=first["id"], action="irrelevant")
+        self.assertEqual(again["error"]["kind"], "conflict")  # already resolved: said plainly, nothing changes
+
+    def test_review_queue_not_relevant_keeps_the_email(self):
+        self.repo.import_message({"id": "g", "subject": "Info sharing GC-102 for main engine", "body": "x", "message_datetime": "2026-11-24T03:00:00Z"})
+        item = next(i for i in views.reviews(self.repo)["items"] if i["gc_numbers"] == ["GC-102"])
+        self.assertTrue(self.ask("review.resolve", actor=ME, review_id=item["id"], action="irrelevant", notes="Another vessel's claim")["ok"])
+        self.assertEqual(self.db("SELECT status, reviewed_by FROM gc_review_queue WHERE id=?", item["id"]), [("IRRELEVANT", ME)])
+        self.assertEqual(self.db("SELECT COUNT(*) FROM gc_emails WHERE id=?", item["email_id"]), [(1,)])
+
     def test_changes_need_a_person_and_a_freshness_stamp(self):
         self.assertIn("actor", self.ask("claim.update", claim_id=self.claim, fields={"title": "x"}, expected_updated_at="x")["error"]["message"])
         self.assertIn("expected_updated_at", self.ask("claim.update", actor=ME, claim_id=self.claim, fields={"title": "x"})["error"]["message"])

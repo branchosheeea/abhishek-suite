@@ -127,6 +127,32 @@ export function snoozeBody(body: Body) {
   return { until: day(body, "until", true), reason: text(body, "reason", true) }
 }
 
+function optionalId(body: Body, key: string): number | undefined {
+  const value = body[key]
+  if (value === undefined || value === null || value === "") return undefined
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || value > 2 ** 53) throw new AppError(400, `${key.replace(/_/g, " ")} must be a positive whole number.`)
+  return value
+}
+
+/** Resolve one Review Queue email: link it (to a claim, or by registering its GC number) or mark it not relevant. */
+export function reviewBody(body: Body) {
+  only(body, ["action", "vessel_id", "claim_id", "register", "link_matching", "notes", "claim_ids"])
+  const notes = text(body, "notes")
+  if (body.action === "multiple") {
+    const ids = body.claim_ids
+    if (!Array.isArray(ids) || ids.length < 2 || ids.length > 20 || ids.some((i) => typeof i !== "number" || !Number.isInteger(i) || i <= 0)) throw new AppError(400, "Choose at least two claims.")
+    return { cmd: "review.resolve_multiple" as const, args: { claim_ids: ids as number[], notes } }
+  }
+  if (body.action !== "link" && body.action !== "irrelevant") throw new AppError(400, "action must be link, irrelevant or multiple.")
+  for (const flag of ["register", "link_matching"]) if (body[flag] !== undefined && typeof body[flag] !== "boolean") throw new AppError(400, `${flag} must be true or false.`)
+  const args: Record<string, unknown> = { action: body.action, register: body.register === true, link_matching: body.link_matching === true, notes }
+  const vessel = optionalId(body, "vessel_id")
+  if (vessel !== undefined) args.vessel_id = vessel
+  const claim = optionalId(body, "claim_id")
+  if (claim !== undefined) args.claim_id = claim
+  return { cmd: "review.resolve" as const, args }
+}
+
 export function decideBody(body: Body) {
   only(body, ["key", "decision", "reason"])
   const [key] = keys({ key: [body.key] }, "key")

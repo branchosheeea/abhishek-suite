@@ -366,7 +366,21 @@ def reviews(repo, vessel_id=None):
     for item in items:
         item["message_datetime"] = when.get(item["email_id"])
     items.sort(key=lambda i: (i["message_datetime"] or ""), reverse=True)
-    return {"vessel": vessel, "items": items}
+    claims = {c["gc_number"]: c for c in repo.claims() if c["vessel_id"] == vessel["id"]}
+    for item in items:  # the likely resolution, decided here so the page only offers it
+        numbers = item["gc_numbers"]
+        item["proposal"] = None
+        if item["type"] == "NEW_GC" and len(numbers) == 1 and item["vessel_known"]:
+            existing = claims.get(numbers[0])
+            item["proposal"] = {"action": "LINK" if existing else "REGISTER", "gc_number": numbers[0],
+                                "claim_id": existing["id"] if existing else None,
+                                "same_gc_emails": repo.matching_new_gc_review_count(item["id"])}
+        elif item["type"] == "MULTIPLE_GC_NUMBERS":
+            item["proposal"] = {"action": "MULTIPLE", "claims": [{"id": claims[n]["id"], "gc_number": n} for n in numbers if n in claims],
+                                "missing": [n for n in numbers if n not in claims]}
+    return {"vessel": vessel, "items": items,
+            "claims": sorted(({"id": c["id"], "gc_number": c["gc_number"], "title": c["title"] or None} for c in claims.values()),
+                             key=lambda c: command.gc_sort_key(c["gc_number"]))}
 
 
 # ---- overview -----------------------------------------------------------------------------------------------------

@@ -187,6 +187,15 @@ class RegisterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.repo.set_parameter(COLT, "ME_SYSTEM_OIL_FULL_CHARGE", 40000, "  ")
 
+    def test_sump_capacity_parameter_is_versioned_and_in_register(self):
+        self.assertIsNone(self.repo.parameter(COLT, "ME_SUMP_CAPACITY"))
+        self.repo.set_parameter(COLT, "ME_SUMP_CAPACITY", 42000, "Engine manual")
+        self.repo.set_parameter(COLT, "ME_SUMP_CAPACITY", 42500, "Chief engineer confirmation")
+        self.assertEqual(self.repo.parameter(COLT, "ME_SUMP_CAPACITY")["value"], 42500)
+        self.assertEqual(self.repo.master_history()[0]["record_key"], f"{COLT}|ME_SUMP_CAPACITY")
+        row = next(r for r in self.repo.register(2026) if r["vessel"] == COLT)
+        self.assertEqual(row["sump"]["value"], 42500)
+
 
 class AliasTests(unittest.TestCase):
     def test_cc_oil_maps_to_me_system(self):

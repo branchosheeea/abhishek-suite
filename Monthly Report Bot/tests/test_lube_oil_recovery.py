@@ -38,6 +38,44 @@ class RecoveryTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_corrected_date_is_a_new_import_and_duplicate_identifies_original(self):
+        path = self.root / "DHT COLT NOVEMBER 2026.xlsx"
+        create_report(path, reporting_date="25 NOVEMBER 2025")
+        original = self.repo.import_file(path)
+        self.assertIn("Filename suggests 2026-11", original["detail"])
+        duplicate = self.repo.import_file(path)
+        self.assertEqual(duplicate["status"], "Duplicate")
+        self.assertEqual(duplicate["report_id"], original["report_id"])
+        workbook = load_workbook(path)
+        workbook.active["B2"] = "25 NOVEMBER 2026"
+        workbook.save(path)
+        workbook.close()
+        corrected = self.repo.import_file(path)
+        self.assertEqual(corrected["status"], "Imported")
+        self.assertNotEqual(corrected["report_id"], original["report_id"])
+        report = next(r for r in self.repo.reports() if r["id"] == corrected["report_id"])
+        self.assertEqual(report["month"], "2026-11")
+        self.assertFalse(any(i["code"] == "filename_period_mismatch" for i in report["data"]["issues"]))
+
+    def test_import_refresh_selects_uploaded_report_instead_of_previous_month(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from lube_oil.ui import ReviewApp
+
+        old = dict(id=24, month="2025-12", vessel="DHT LEOPARD", data={})
+        new = dict(id=57, month="2025-11", vessel="DHT LEOPARD", data={})
+        app = SimpleNamespace(
+            vessel=Mock(), repo=Mock(), report_id=24, analysis_month="2025-12",
+            change_vessel=Mock(),
+        )
+        app.vessel.get.return_value = "DHT LEOPARD"
+        app.repo.reports.return_value = [old, new]
+        ReviewApp.refresh(app, [dict(report_id=57, status="Imported")])
+        self.assertEqual(app.report_id, 57)
+        self.assertEqual(app.analysis_month, "2025-11")
+        ReviewApp.refresh(app, [dict(status="Failed")])
+        self.assertEqual(app.report_id, 57)
+
     def test_a_file_that_failed_can_be_imported_again(self):
         with patch.object(repository_module, "parse_workbook", broken_parse):
             self.assertEqual(self.repo.import_file(self.sheet)["status"], "Failed")

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ME Dump Viewer</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h3l2-7 3 11 3-14 2 10h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span class="brand-name">ME Dump Viewer</span>
+    <span class="brand-sub">MAN B&amp;W ME-ECS burst logs</span>
+  </div>
+  <div class="topbar-actions">
+    <button id="btn-print" class="btn" type="button" hidden>Print summary</button>
+    <button id="btn-close" class="btn ghost" type="button" hidden>Close files</button>
+    <button id="btn-open" class="btn primary" type="button">Open dump files</button>
+  </div>
+  <input id="file-input" type="file" accept=".dat" multiple hidden>
+</header>
+
+<main id="main">
+  <section id="start" class="start">
+    <div id="drop" class="drop" tabindex="0" role="button" aria-label="Choose dump files to open">
+      <svg class="drop-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 30V8m0 0-8 8m8-8 8 8M8 30v6a4 4 0 0 0 4 4h24a4 4 0 0 0 4-4v-6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <h1>Open engine dump files</h1>
+      <p>Drop the CCU burst-log files (<b>.dat</b>) here, or click to choose them.<br>
+        Open the files of all cylinders together to compare the cylinders.</p>
+      <span class="btn primary big">Choose files</span>
+      <p class="privacy">The files are read on this computer only. Nothing is uploaded.</p>
+    </div>
+    <ol class="steps">
+      <li><b>Summary</b> tells you straight away what stands out, cylinder by cylinder.</li>
+      <li><b>Cylinder graphs</b> show every signal of one cylinder, against time or crank angle.</li>
+      <li><b>Compare cylinders</b> lays one signal of all cylinders on top of each other.</li>
+    </ol>
+    <div id="start-notices"></div>
+  </section>
+
+  <section id="workspace" hidden>
+    <div class="dump-head">
+      <div class="dump-head-text">
+        <h1 id="dump-title"></h1>
+        <p id="dump-sub"></p>
+      </div>
+      <label id="set-picker-wrap" class="set-picker" hidden>
+        <span>Dump</span>
+        <select id="set-picker"></select>
+      </label>
+    </div>
+    <div id="notices"></div>
+    <nav class="tabs" role="tablist" aria-label="Views">
+      <button role="tab" type="button" data-tab="summary" id="tabbtn-summary">Summary</button>
+      <button role="tab" type="button" data-tab="graphs" id="tabbtn-graphs">Cylinder graphs</button>
+      <button role="tab" type="button" data-tab="compare" id="tabbtn-compare">Compare cylinders</button>
+      <button role="tab" type="button" data-tab="details" id="tabbtn-details">File details</button>
+    </nav>
+    <div class="tab-panel" id="tab-summary" role="tabpanel" aria-labelledby="tabbtn-summary"></div>
+    <div class="tab-panel" id="tab-graphs" role="tabpanel" aria-labelledby="tabbtn-graphs" hidden></div>
+    <div class="tab-panel" id="tab-compare" role="tabpanel" aria-labelledby="tabbtn-compare" hidden></div>
+    <div class="tab-panel" id="tab-details" role="tabpanel" aria-labelledby="tabbtn-details" hidden></div>
+  </section>
+</main>
+
+<div id="drop-overlay" class="drop-overlay" hidden><div>Drop the dump files to open them</div></div>
+
+<script src="dumpfile.js"></script>
+<script src="analysis.js"></script>
+<script src="plot.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

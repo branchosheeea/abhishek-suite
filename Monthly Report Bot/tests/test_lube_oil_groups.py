@@ -96,7 +96,7 @@ class DashboardTests(unittest.TestCase):
                 "events": [dict(engine="AE1", date=f"{month}-10", event_type="PROBABLE_RENEWAL")]},
         )
 
-    def test_cover_gaps_and_inactive_reports(self):
+    def test_margin_gaps_and_inactive_reports(self):
         from lube_oil.analytics import dashboard
         reports = [self.month_report("2026-01", 9000, 1000), self.month_report("2026-03", 6000, 2000),
                    self.month_report("2026-02", 1, 1, active=False)]
@@ -107,24 +107,94 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(high["closing"], 6000)
         self.assertEqual(high["opening"], 10000)
         self.assertEqual(high["withdrawn"], 3000)
-        # A missing month blocks the 3-month average; with no budget rate there is no cover, not a guess.
-        self.assertIsNone(high["cover"])
+        # A missing month blocks the 3-month average; with no budget rate there is no margin, not a guess.
+        self.assertIsNone(high["margin"])
         self.assertEqual(high["status"], "No data")
         budgeted = dashboard(reports, "DHT COLT", "2026-03", months=3,
                              budget_monthly={"Cylinder oil · High TBN": 1500})
         high = next(g for g in budgeted["grades"] if g["group"] == "Cylinder oil · High TBN")
-        self.assertAlmostEqual(high["cover"], 4)
-        self.assertEqual((high["cover_basis"], high["status"]), ("approved budget rate", "Planning"))
+        self.assertAlmostEqual(high["margin"], 4)
+        # Cylinder oil has no "Below minimum" band: 4 months is OK.
+        self.assertEqual((high["margin_basis"], high["status"]), ("approved budget rate", "OK"))
+        self.assertIsNone(high["reserve"])
         complete = dashboard(reports[:2] + [self.month_report("2026-02", 7000, 4000)], "DHT COLT", "2026-03", months=3)
         high = next(g for g in complete["grades"] if g["group"] == "Cylinder oil · High TBN")
-        self.assertAlmostEqual(high["cover"], 6000 / ((1000 + 4000 + 2000) / 3))
-        self.assertEqual(high["cover_basis"], "3-month normal average")
-        self.assertEqual(high["status"], "Low")
+        self.assertAlmostEqual(high["margin"], 6000 / ((1000 + 4000 + 2000) / 3))
+        self.assertEqual(high["margin_basis"], "3-month normal average")
+        self.assertEqual(high["status"], "Alarm")
         self.assertEqual(data["ae"]["operating"], [40, None, 40])
         self.assertEqual(data["ae"]["change_loss"], [None, None, None])
         self.assertEqual(data["ae"]["probable"], 2)
         gear = data["support"][0]
         self.assertEqual((gear["group"], gear["total"], gear["months"]), ("Gear oil", 10, 2))
+
+
+class SafetyMarginTests(unittest.TestCase):
+    """ME system oil: (storage ROB - one full charge) / monthly routine use; one charge = 80% of sump capacity."""
+
+    ROUTINE = {"2026-06": 2000, "2026-07": 2000, "2026-08": 2000, "2026-09": 0, "2026-10": 3500, "2026-11": 2000}
+
+    def me_report(self, month, routine, closing, total="same"):
+        return dict(
+            id=month, month=month, vessel="DHT STALLION", is_active=True, validation_status="WARNING",
+            data={"inventory": [dict(category="SYSTEM OIL M/E", grade="VERITAS 800 A MARINE 30", unit="L",
+                                     operating=routine, change_loss=0, all_in=routine if total == "same" else total,
+                                     withdrawal=routine, closing=closing)],
+                  "engines": [], "issues": [], "events": []},
+        )
+
+    def me(self, closing=34700, capacity=42500, budget=None, routine=None):
+        from lube_oil.analytics import dashboard
+        routine = routine or self.ROUTINE
+        # September's D+E total is blank on the real sheet; routine (D) is still 0.
+        reports = [self.me_report(m, d, closing if m == "2026-11" else 40000, total=None if m == "2026-09" else "same")
+                   for m, d in routine.items()]
+        data = dashboard(reports, "DHT STALLION", "2026-11", months=6, me_sump_capacity=capacity,
+                         budget_monthly=budget)
+        return next(g for g in data["grades"] if g["group"] == "System oil · ME")
+
+    def test_reserve_is_deducted_and_routine_rate_used(self):
+        me = self.me()
+        rate = 11500 / 6
+        self.assertAlmostEqual(me["margin_rate"], rate)
+        self.assertEqual(me["margin_basis"], "6-month normal average")
+        self.assertEqual(me["reserve"], 34000)
+        self.assertAlmostEqual(me["margin"], 700 / rate)
+        self.assertEqual(me["status"], "Danger")
+        self.assertAlmostEqual(me["minimum_rob"], 34000 + 4 * rate)
+        self.assertAlmostEqual(me["order_to_minimum"], 34000 + 4 * rate - 34700)
+        self.assertAlmostEqual(me["margin_days"], 700 / rate * 30.4)
+        self.assertEqual(str(me["reserve_date"]), "2026-12-11")
+
+    def test_bands(self):
+        rate = 11500 / 6
+        for months, status in ((4, "OK"), (3.99, "Below minimum"), (3, "Below minimum"), (2.99, "Alarm"),
+                               (1, "Alarm"), (0.99, "Danger"), (-0.5, "Danger")):
+            with self.subTest(months=months):
+                self.assertEqual(self.me(closing=34000 + months * rate)["status"], status)
+
+    def test_into_reserve_is_negative_and_danger(self):
+        me = self.me(closing=30000)
+        self.assertLess(me["margin"], 0)
+        self.assertEqual(me["status"], "Danger")
+
+    def test_no_sump_capacity_means_no_margin_and_no_alarm(self):
+        me = self.me(capacity=None)
+        self.assertIsNone(me["margin"])
+        self.assertIsNone(me["reserve"])
+        self.assertEqual(me["status"], "Sump capacity not set")
+
+    def test_missing_routine_month_falls_back_to_budget(self):
+        routine = dict(self.ROUTINE, **{"2026-10": None})
+        me = self.me(routine=routine, budget={"System oil · ME": 1500})
+        self.assertEqual(me["margin_basis"], "approved budget rate")
+        self.assertAlmostEqual(me["margin"], 700 / 1500)
+
+    def test_margin_status_without_reserve_for_other_grades(self):
+        from lube_oil.analytics import margin_status
+        self.assertEqual(margin_status(3.5, "Cylinder oil · High TBN"), "OK")
+        self.assertEqual(margin_status(3.5, "System oil · ME"), "Below minimum")
+        self.assertEqual(margin_status(None, "System oil · AE"), "No data")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ Office automation tools for vessel reporting and inspection work.
 
 | Module | What it is |
 |---|---|
+| [Dump File reader](Dump%20File%20reader/README.md) | ME Dump Viewer: offline viewer for MAN B&W ME-ECS CCU burst-log dumps (`.dat`), with findings and cylinder comparison |
 | [Fortnighly Bunker](Fortnighly%20Bunker/) | Outlook/Excel scripts to find, save and review fortnightly bunker reports |
 | [Monthly Report Bot](Monthly%20Report%20Bot/README.md) | Automation suite for monthly vessel reports, GC manager, lube oil and voyage summaries |
 | [Photo Assorter](Photo%20Assorter/README.md) | Inspection Intelligence: local photo sorting and classification for inspections |

@@ -8,6 +8,7 @@ import calendar
 from datetime import date, datetime
 import math
 import re
+from copy import deepcopy
 from zipfile import ZipFile, BadZipFile
 from openpyxl import load_workbook
 
@@ -77,6 +78,35 @@ def parse_reporting_month(value, search=False):
         year += 2000 if year < 70 else 1900
     return f"{year:04d}-{month:02d}"
 
+
+def apply_effective_period(payload, month, reporting_date):
+    """Revalidate period-dependent interpretations without changing original cell evidence."""
+    result = deepcopy(payload)
+    result['month'], result['reporting_date'] = month, reporting_date
+    result['issues'] = [i for i in result['issues'] if not i['code'].startswith(('hours:', 'future_change:', 'renewal:'))]
+    result['events'] = []
+    def warning(code, title, detail, fields):
+        result['issues'].append(dict(code=code,title=title,detail=detail,fields=fields,severity='WARNING'))
+    for engine in result.get('engines', []):
+        name, hours = engine['engine'], engine.get('hours')
+        if month and hours is not None:
+            year, number = map(int, month.split('-'))
+            maximum = calendar.monthrange(year, number)[1] * 24
+            if hours > maximum:
+                warning('hours:'+name, 'Running hours exceed calendar month', f'{name}: {hours:g} h exceeds {maximum} h. Confirm period or reading.', [name+'.hours'])
+        changed = engine.get('last_change')
+        if changed and reporting_date and changed > reporting_date:
+            warning('future_change:'+name,'Oil-change date follows report date',name,[name+'.last_change','reporting_date'])
+        if not name.startswith('AE'):
+            continue
+        explicit = re.search(r'AE\s*#?\s*'+name[-1]+r'\s+SUMP\s+(?:OIL\s+)?RENEWED', result.get('remarks',''), re.I)
+        current = changed and changed[:7] == month
+        if explicit or current:
+            confirmed = bool(explicit and current)
+            result['events'].append(dict(engine=name,date=changed,quantity=None,event_type='CONFIRMED_RENEWAL' if confirmed else 'PROBABLE_RENEWAL',evidence='Matching renewal remark and current-month change date' if confirmed else 'Last-change date and/or remark require review',confidence='corroborated' if confirmed else 'review_required'))
+            if not confirmed:
+                warning('renewal:'+name,'Reconcile sump renewal evidence',f'{name}: change date {changed or "unknown"}; no quantity allocated from pooled loss.',[name+'.last_change'])
+    return result
 
 def parse_workbook(path, source_name=None, tolerance=0.02):
     if path.suffix.lower() != ".xlsx":
@@ -152,6 +182,9 @@ def parse_workbook(path, source_name=None, tolerance=0.02):
         if not result["vessel"] or not result["month"]:
             issue("identity", "Report identity needs review", "Vessel or reporting date could not be resolved.", ["vessel", "reporting_date"], "FAIL")
         filename_month = parse_reporting_month(source_name, search=True)
+        result['period_evidence'] = dict(filename=source_name, filename_period=filename_month,
+            workbook_period=result['month'], workbook_reporting_date=result['reporting_date'],
+            source=result['evidence'].get('reporting_date'), parser_interpretation=result['month'])
         if filename_month and result["month"] and filename_month != result["month"]:
             issue(
                 "filename_period_mismatch",

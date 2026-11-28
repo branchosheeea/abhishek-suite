@@ -20,7 +20,6 @@ from .analytics import (
     continuity,
     consumption_trend_range,
     dashboard,
-    LOW_COVER_MONTHS,
     grade_daily_trend,
     group_monthly_trend,
     group_unit,
@@ -31,7 +30,10 @@ from .analytics import (
     metric,
     monthly_analysis,
     period_rate,
-    COVER_THRESHOLDS,
+    ALARM_MONTHS,
+    DANGER_MONTHS,
+    FULL_CHARGE_FRACTION,
+    ME_MINIMUM_MONTHS,
     tank_fill,
 )
 from .budget import (
@@ -109,13 +111,16 @@ GRADE_STYLE = {
         title="AE System Oil / AECC", badge="AE", color="#6A5ACD", tint="#ECE9FB"
     ),
 }
-COVER_PILL = {
-    "Normal": ("#DDF3E6", "#1E7A45"),
-    "Planning": ("#E3ECF8", ACCENT),
-    "Low": ("#FCEFD3", "#8A5A00"),
-    "Critical": ("#FBE3E1", "#B42318"),
+# Safety-margin bands: pill colours and the text shown on the pill.
+MARGIN_PILL = {
+    "OK": ("#DDF3E6", "#1E7A45"),
+    "Below minimum": ("#FCEFD3", "#8A5A00"),
+    "Alarm": ("#FDE3CC", "#B54708"),
+    "Danger": ("#FBE3E1", "#B42318"),
+    "Sump capacity not set": ("#ECEFF2", MUTED),
     "No data": ("#ECEFF2", MUTED),
 }
+MARGIN_PILL_TEXT = {"Danger": "Danger – store now", "Sump capacity not set": "Sump not set"}
 # Supporting lubricants: compact, inventory-only buckets. Never part of the cost analysis.
 SUPPORT_BUCKETS = (
     ("Hydraulics", ("Hydraulic oil",), "HY", "#D2504B", "#FBE7E6"),
@@ -320,6 +325,14 @@ GROUP_STYLE = {
 
 def litres(value, unit="L"):
     return "—" if value is None else f"{value:,.0f} {unit}".strip()
+
+
+def margin_text(grade, days=True):
+    """Safety margin as months with days, e.g. "0.4 mo (11 days)"; "—" when it cannot be worked out."""
+    if grade.get("margin") is None:
+        return "—"
+    text = f"{grade['margin']:.1f} mo"
+    return text + (f" ({grade['margin_days']:,.0f} days)" if days else "")
 
 
 def month_label(month, year=False):
@@ -855,13 +868,14 @@ class ReviewApp(ctk.CTk):
             anchor="w", pady=(0, 14)
         )
 
-    def banner(self, text, tone="good"):
+    def banner(self, text, tone="good", parent=None):
         fill, ink = {
             "good": ("#E7F5EC", GOOD),
             "warn": ("#FDF5E6", AMBER),
+            "danger": ("#FBE3E1", "#B42318"),
             "neutral": ("#EEF1F4", MUTED),
         }[tone]
-        frame = ctk.CTkFrame(self.body, fg_color=fill, corner_radius=10)
+        frame = ctk.CTkFrame(parent or self.body, fg_color=fill, corner_radius=10)
         frame.pack(fill="x", pady=(0, 14), padx=2)
         self.label(frame, text, 12, ink, True, wraplength=1000, justify="left").pack(
             anchor="w", padx=16, pady=10
@@ -1729,9 +1743,17 @@ class ReviewApp(ctk.CTk):
         except (OSError, ValueError) as error:
             messagebox.showerror("Monthly export failed", str(error), parent=self)
 
-    def refresh(self):
+    def refresh(self, import_results=()):
         prior_vessel = self.vessel.get()
         self.reports = self.repo.reports()
+        imported_ids = {item.get("report_id") for item in import_results}
+        candidates = [r for r in self.reports if r["id"] in imported_ids]
+        if candidates:
+            same_vessel = [r for r in candidates if r["vessel"] == prior_vessel]
+            selected = max(same_vessel or candidates, key=lambda r: r["id"])
+            self.report_id = selected["id"]
+            prior_vessel = selected["vessel"] or selected["data"]["vessel"] or "Unresolved vessel"
+            self.analysis_month = selected["month"]
         months = sorted({report["month"] for report in self.reports if report["month"]})
         if self.analysis_month not in months:
             self.analysis_month = months[-1] if months else None
@@ -1824,6 +1846,14 @@ class ReviewApp(ctk.CTk):
         for child in self.body.winfo_children():
             child.destroy()
         self.activity_box = None
+        if self.current and page not in ("Fleet", "Register", "Activity", "Monthly Analysis"):
+            for issue in self.current["data"].get("issues", []):
+                if issue["code"] == "filename_period_mismatch":
+                    self.banner(
+                        "Reporting date needs correction. " + issue["detail"]
+                        + " Correct the date inside the source workbook, save it, then import the corrected copy.",
+                        "warn",
+                    )
         if page == "Activity":
             self.render_activity()
         elif page == "Reports":
@@ -1945,7 +1975,7 @@ class ReviewApp(ctk.CTk):
         )
 
     def budget_monthly(self, year):
-        """Approved monthly litres per group: the last-resort stock-cover rate (cylinder budget is a total, so not split)."""
+        """Approved monthly litres per group: the last-resort safety-margin rate (cylinder budget is a total, so not split)."""
         rows = (
             {
                 b["oil_category"]: b
@@ -1977,7 +2007,16 @@ class ReviewApp(ctk.CTk):
             end,
             months or max(self.window_months(end), minimum_months),
             budget_monthly=self.budget_monthly(int(end[:4])),
+            me_sump_capacity=self.me_sump_capacity(),
         )
+
+    def me_sump_capacity(self):
+        """The vessel's ME sump capacity (litres) from master data, or None when not recorded."""
+        try:
+            row = self.repo.parameter(self.vessel.get(), "ME_SUMP_CAPACITY")
+        except ValueError:
+            return None
+        return row["value"] if row else None
 
     def card_budget_data(self, end, detail_months):
         """Year-to-date budget for the cards plus each bar month against its own allowance (its own year's basis)."""
@@ -1990,6 +2029,26 @@ class ReviewApp(ctk.CTk):
             except ValueError:
                 pass
         return card_budget(self.reports, vessel, end, basis, prices, detail_months)
+
+    def margin_alerts(self, parent, grades):
+        """One banner per grade in Alarm or Danger, red first. Nothing is shown when every grade is fine."""
+        for tone, status, message in (
+            ("danger", "Danger", "below dangerous level — immediate storing required"),
+            ("warn", "Alarm", f"safety margin below {ALARM_MONTHS} months — plan storing now"),
+        ):
+            for grade in grades:
+                if grade["status"] != status:
+                    continue
+                name = GRADE_STYLE[grade["group"]]["title"]
+                text = (
+                    f"{'⚠ ' if tone == 'danger' else ''}{name}: {message} "
+                    f"({margin_text(grade, days=False)}, {grade['margin_days']:,.0f} days)."
+                )
+                if grade["margin"] is not None and grade["margin"] < 0:
+                    text += " Stock is already into the reserve charge."
+                if grade.get("order_to_minimum"):
+                    text += f" Order about {grade['order_to_minimum']:,.0f} L to reach the minimum ROB."
+                self.banner(text, tone, parent)
 
     def bulk_cards(self, parent, end=None):
         """The four primary cards in the locked order. Bars and L/24h follow the selected period."""
@@ -2005,6 +2064,7 @@ class ReviewApp(ctk.CTk):
         grades = sorted(
             data["grades"], key=lambda g: list(GRADE_STYLE).index(g["group"])
         )
+        self.margin_alerts(parent, grades)
         cards = ctk.CTkFrame(parent, fg_color="transparent")
         cards.pack(fill="x")
         for index in range(4):
@@ -2138,7 +2198,6 @@ class ReviewApp(ctk.CTk):
             )
         minor = ctk.CTkFrame(card, fg_color="transparent")
         minor.pack(fill="x", padx=14, pady=(6, 0))
-        cover = f"{grade['cover']:.1f} mo" if grade["cover"] is not None else "—"
         budget = grade.get("budget")
         category = budget_category(grade["group"])
         row = budget["categories"].get(category) if budget else None
@@ -2151,7 +2210,7 @@ class ReviewApp(ctk.CTk):
             (
                 (rate_title, "—" if rate_value is None else f"{rate_value:,.1f}"),
                 ("YTD used", litres(group_ytd_actual(row, grade["group"]))),
-                ("Cover", cover),
+                ("Safety margin", margin_text(grade, days=False)),
             )
         ):
             minor.grid_columnconfigure(column, weight=1, uniform="minor")
@@ -2180,6 +2239,7 @@ class ReviewApp(ctk.CTk):
                     for d in grade["details"]
                 ],
             )
+        self.margin_line(card, grade)
         tank = fill
         tank_text = (
             (
@@ -2194,10 +2254,10 @@ class ReviewApp(ctk.CTk):
         )
         foot = ctk.CTkFrame(card, fg_color="transparent")
         foot.pack(fill="x", padx=14, pady=(4, 0))
-        fill, ink = COVER_PILL[grade["status"]]
+        fill, ink = MARGIN_PILL[grade["status"]]
         ctk.CTkLabel(
             foot,
-            text=grade["status"],
+            text=MARGIN_PILL_TEXT.get(grade["status"], grade["status"]),
             fg_color=fill,
             text_color=ink,
             corner_radius=6,
@@ -2208,10 +2268,12 @@ class ReviewApp(ctk.CTk):
             "6-month normal average": "6M avg",
             "3-month normal average": "3M avg",
             "approved budget rate": "budget rate",
-        }.get(grade["cover_basis"], "no rate")
+        }.get(grade["margin_basis"], "no rate")
+        if grade["group"] == "System oil · ME" and grade["margin_basis"] != "approved budget rate":
+            basis += " routine"
         self.label(
             foot,
-            f"  cover basis: {basis}"
+            f"  margin basis: {basis}"
             + (f" · {month_label(latest, True)}" if latest else ""),
             9,
             MUTED,
@@ -2223,6 +2285,39 @@ class ReviewApp(ctk.CTk):
             lambda _e: draw_card_bars(canvas, grade["details"], style["color"]),
         )
         return card
+
+    def margin_line(self, card, grade):
+        """Under the card figures: days of margin and when stock reaches the reserve (ME) or runs out (others)."""
+        me = grade["group"] == "System oil · ME"
+        if me and grade["status"] == "Sump capacity not set":
+            text = "Safety margin needs the ME sump capacity — set it in Master data"
+        elif grade["margin"] is None:
+            text = "Safety margin: no consumption rate yet"
+        else:
+            when = grade["reserve_date"].strftime("%d %b %Y")
+            if grade["margin"] < 0:
+                text = f"Already {abs(grade['margin_days']):,.0f} days into the reserve charge"
+            else:
+                text = f"{grade['margin_days']:,.0f} days · " + (
+                    f"reaches reserve ~{when}" if me else f"runs out ~{when}"
+                )
+        self.label(card, text, 10, INK if grade["margin"] is not None else MUTED).pack(
+            anchor="w", padx=14, pady=(6, 0)
+        )
+        if me and grade["reserve"] is not None:
+            parts = [f"Reserve (1 charge) {litres(grade['reserve'])}"]
+            if grade["minimum_rob"] is not None:
+                parts.append(f"Min ROB {litres(grade['minimum_rob'])}")
+                if grade["order_to_minimum"]:
+                    parts.append(f"Order {litres(grade['order_to_minimum'])}")
+            self.label(
+                card,
+                " · ".join(parts),
+                9,
+                RED if grade["order_to_minimum"] else MUTED,
+                wraplength=320,
+                justify="left",
+            ).pack(anchor="w", padx=14, pady=(2, 0))
 
     def card_budget_line(self, card, budget, row):
         """Year to date (from 1 January) against the allowance: the same figures as the Budget Performance page."""
@@ -2341,7 +2436,7 @@ class ReviewApp(ctk.CTk):
     def stock_panel(self, grades):
         panel = self.panel(
             self.body,
-            "Bulk Grade Stock & Cover",
+            "Bulk Grade Stock & Safety Margin",
             link=("View inventory", lambda: self.show("Inventory")),
         )
         table = ctk.CTkFrame(panel, fg_color="transparent")
@@ -2352,7 +2447,7 @@ class ReviewApp(ctk.CTk):
             "Received (L)",
             "Consumption (L)",
             "Closing (L)",
-            "Cover (months)",
+            "Safety margin (months)",
             "Status",
         )
         for column, heading in enumerate(headings):
@@ -2366,7 +2461,7 @@ class ReviewApp(ctk.CTk):
             self.label(cell, heading, 11, INK, True).pack(
                 anchor="w" if column == 0 else "e", padx=10, pady=7
             )
-        pills = COVER_PILL
+        pills = MARGIN_PILL
         for row, grade in enumerate(grades, start=1):
             style = GRADE_STYLE[grade["group"]]
             values = (
@@ -2377,7 +2472,7 @@ class ReviewApp(ctk.CTk):
                 # not the storage issue: for system oils part of what leaves storage tops up the sump.
                 amount(grade["consumption"], 0),
                 amount(grade["closing"], 0),
-                f"{grade['cover']:.1f}" if grade["cover"] is not None else "—",
+                f"{grade['margin']:.1f}" if grade["margin"] is not None else "—",
             )
             for column, value in enumerate(values):
                 self.label(
@@ -2397,7 +2492,7 @@ class ReviewApp(ctk.CTk):
             fill, ink = pills[grade["status"]]
             ctk.CTkLabel(
                 table,
-                text=grade["status"],
+                text=MARGIN_PILL_TEXT.get(grade["status"], grade["status"]),
                 fg_color=fill,
                 text_color=ink,
                 corner_radius=6,
@@ -2414,10 +2509,13 @@ class ReviewApp(ctk.CTk):
             "(system oils: routine + change/loss; cylinder oils: storage withdrawal). For system oils, oil issued from "
             "storage can differ from consumption by the change in sump quantity, so Opening + Received − Consumption "
             "need not equal Closing; the storage book is on the Inventory page. "
-            "Cover = storage ROB ÷ normal monthly consumption (6-month average, else 3-month, else approved budget rate; "
-            "confirmed AE sump renewals excluded). Provisional thresholds, not company policy: "
-            f"Critical < {COVER_THRESHOLDS['Critical']}, Low < {COVER_THRESHOLDS['Low']}, "
-            f"Planning < {COVER_THRESHOLDS['Planning']} months.",
+            "Safety margin = months of normal use held in storage above any reserve. "
+            f"ME system oil: (storage ROB − one full charge) ÷ monthly routine consumption; one full charge = "
+            f"{FULL_CHARGE_FRACTION:.0%} of the ME sump capacity and is never counted as usable stock; minimum ROB = "
+            f"one full charge + {ME_MINIMUM_MONTHS} months. Other grades: storage ROB ÷ monthly consumption. "
+            "Monthly rate: 6-month average, else 3-month, else approved budget rate. "
+            f"Bands: OK · Below minimum (ME, under {ME_MINIMUM_MONTHS} months) · Alarm (under {ALARM_MONTHS} months) · "
+            f"Danger, store now (under {DANGER_MONTHS} month).",
             10,
             MUTED,
             wraplength=1000,
@@ -4822,8 +4920,8 @@ class ReviewApp(ctk.CTk):
                     "#2A9D8F",
                 ),
                 (
-                    "Vessels with ME full charge recorded",
-                    f"{sum(r['charge'] is not None for r in rows)} / {len(rows)}",
+                    "Vessels with ME sump capacity recorded",
+                    f"{sum(r['sump'] is not None for r in rows)} / {len(rows)}",
                     GOOD,
                 ),
                 ("Current bulk tanks registered", str(len(tanks)), "#6A5ACD"),
@@ -4903,13 +5001,14 @@ class ReviewApp(ctk.CTk):
             pady=(0, 12),
         )
 
-        section = self.section("Stock-cover parameters", "per vessel, versioned")
-        weights = (3, 3, 3, 4, 1)
+        section = self.section("Safety-margin settings", "per vessel, versioned")
+        weights = (3, 3, 3, 3, 4, 1)
         table = self.register_table(
             section,
             (
                 "Vessel",
-                "ME system oil · one full charge",
+                "ME sump capacity",
+                f"One full charge ({FULL_CHARGE_FRACTION:.0%})",
                 "Latest sheet: ME system qty",
                 "Source",
                 "",
@@ -4917,7 +5016,7 @@ class ReviewApp(ctk.CTk):
             weights,
         )
         for index, row in enumerate(rows, start=1):
-            charge = row["charge"]
+            charge = row["sump"]
             quantity, month = self.latest_system_quantity(row["vessel"])
             self.register_row(
                 table,
@@ -4925,6 +5024,7 @@ class ReviewApp(ctk.CTk):
                 (
                     vessel_title(row["vessel"]),
                     litres(charge["value"]) if charge else ("Not recorded", "neutral"),
+                    litres(charge["value"] * FULL_CHARGE_FRACTION) if charge else "—",
                     (
                         f"{litres(quantity)} ({month_label(month, True)})"
                         if quantity is not None
@@ -4944,8 +5044,10 @@ class ReviewApp(ctk.CTk):
             )
         self.fluid(
             section,
-            "Agreed rule: ME system oil storage ROB should hold one full charge at all times. "
-            "Cylinder oil minimum: under assessment. Status thresholds stay provisional until agreed.",
+            f"Company rule: ME system oil storage must hold one full charge ({FULL_CHARGE_FRACTION:.0%} of the ME sump "
+            f"capacity) plus at least {ME_MINIMUM_MONTHS} months of consumption. Alarm under {ALARM_MONTHS} months of "
+            f"safety margin; danger, store now, under {DANGER_MONTHS} month. Without the sump capacity the ME safety "
+            "margin is not shown. Cylinder and AE oil minimums: not yet set.",
             wrap=900,
             padx=16,
             pady=(0, 12),
@@ -5551,14 +5653,14 @@ class ReviewApp(ctk.CTk):
         return entry
 
     def edit_parameter(self, vessel):
-        current = self.repo.parameter(vessel, "ME_SYSTEM_OIL_FULL_CHARGE")
+        current = self.repo.parameter(vessel, "ME_SUMP_CAPACITY")
         quantity, month = self.latest_system_quantity(vessel)
         window = self.dialog(
-            f"ME system oil full charge · {vessel_title(vessel)}", "620x330"
+            f"ME sump capacity · {vessel_title(vessel)}", "620x330"
         )
         self.label(
             window,
-            f"{vessel_title(vessel)} · ME system oil, one full charge",
+            f"{vessel_title(vessel)} · ME sump capacity",
             17,
             INK,
             True,
@@ -5571,7 +5673,8 @@ class ReviewApp(ctk.CTk):
         self.label(
             window,
             hint
-            + "Enter the confirmed full-charge quantity; it is not taken from the sheet automatically.",
+            + "Enter the ME sump capacity from the engine manual or the chief engineer. One full charge "
+            f"({FULL_CHARGE_FRACTION:.0%} of it) is held back as the ME system oil reserve in the safety margin.",
             11,
             MUTED,
             wraplength=570,
@@ -5587,7 +5690,7 @@ class ReviewApp(ctk.CTk):
         form.pack(fill="x", padx=20)
         form.grid_columnconfigure((0, 1), weight=1)
         value = self.form_entry(
-            form, 0, 0, "Full charge (L)", current and current["value"]
+            form, 0, 0, "ME sump capacity (L)", current and current["value"]
         )
         source = self.form_entry(
             form, 0, 1, "Source (required)", current and current["source_reference"]
@@ -5598,7 +5701,7 @@ class ReviewApp(ctk.CTk):
             try:
                 self.repo.set_parameter(
                     vessel,
-                    "ME_SYSTEM_OIL_FULL_CHARGE",
+                    "ME_SUMP_CAPACITY",
                     value.get().strip(),
                     source.get(),
                     remarks.get().strip() or None,
@@ -5606,7 +5709,7 @@ class ReviewApp(ctk.CTk):
             except ValueError as error:
                 messagebox.showerror("Not saved", str(error), parent=window)
                 return
-            self.log_activity(f"ME system oil full charge recorded for {vessel}.")
+            self.log_activity(f"ME sump capacity recorded for {vessel}.")
             window.destroy()
             self.show(self.page)
 
@@ -6052,7 +6155,7 @@ class ReviewApp(ctk.CTk):
                         continue
                     self.set_transfer_controls(True)
                     self.page = "Reports"
-                    self.refresh()
+                    self.refresh(import_results=self.import_log)
                     if self.transfer_notice:
                         imported = sum(
                             item["status"] == "Imported" for item in self.import_log

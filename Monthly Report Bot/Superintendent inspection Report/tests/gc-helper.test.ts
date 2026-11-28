@@ -7,11 +7,11 @@ import { join } from "node:path"
 import { after, afterEach, before, beforeEach, describe, test } from "node:test"
 import { fileURLToPath } from "node:url"
 import { GC_MODULE, GcHelper, helperOptions, type HelperOptions } from "../lib/gc/helper"
-import { closeBody, decideBody, setupBody, snoozeBody, statusBody, updateBody } from "../lib/gc/body"
+import { closeBody, decideBody, reviewBody, setupBody, snoozeBody, statusBody, updateBody } from "../lib/gc/body"
 import { correspondenceArgs, idFrom, registerArgs, searchArgs, vesselArgs } from "../lib/gc/params"
 import { APP, type Claims, COOKIE, pageGate, sign } from "../lib/server/auth"
-import { AppError } from "../lib/server/errors"
-import { json, route } from "../lib/server/http"
+import { AppError, SessionError } from "../lib/server/errors"
+import { errorResponse, json, route } from "../lib/server/http"
 
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..")
 const PROJECT = join(ROOT, "..")
@@ -280,5 +280,30 @@ describe("change requests from the browser", () => {
     bad(() => snoozeBody({ until: "soon", reason: "x" }), /must be a date/)
     assert.deepEqual(decideBody({ key: "LINK:3:9:9", decision: "ACCEPTED" }), { key: "LINK:3:9:9", decision: "ACCEPTED", reason: "" })
     bad(() => decideBody({ key: "LINK:3:9:9", decision: "MAYBE" }), /ACCEPTED or REJECTED/)
+  })
+
+  test("review queue resolutions take only the known actions and ids", () => {
+    assert.deepEqual(reviewBody({ action: "link", register: true, vessel_id: 2, link_matching: true }),
+      { cmd: "review.resolve", args: { action: "link", register: true, link_matching: true, notes: "", vessel_id: 2 } })
+    assert.deepEqual(reviewBody({ action: "multiple", claim_ids: [3, 4], notes: "AWB covers both" }), { cmd: "review.resolve_multiple", args: { claim_ids: [3, 4], notes: "AWB covers both" } })
+    bad(() => reviewBody({ action: "delete" }), /link, irrelevant or multiple/)
+    bad(() => reviewBody({ action: "link", claim_id: "5; drop" }), /positive whole number/)
+    bad(() => reviewBody({ action: "multiple", claim_ids: [3] }), /at least two/)
+    bad(() => reviewBody({ action: "link", path: "C:/x" }), /Unknown value/)
+  })
+})
+
+describe("errors made by another copy of the code", () => {
+  test("an AppError from a second module copy keeps its status and message (not a 500)", async () => {
+    const copy = Object.assign(new Error("This email was already resolved."), { status: 409, [Symbol.for("neraveda.AppError")]: true })
+    assert.ok(copy instanceof AppError)
+    assert.ok(!(copy instanceof SessionError))
+    const res = errorResponse(copy)
+    assert.equal(res.status, 409)
+    assert.deepEqual(await res.json(), { error: "This email was already resolved." })
+    assert.ok(!(new Error("boom") instanceof AppError))
+    assert.equal(errorResponse(new Error("boom")).status, 500)
+    assert.ok(new SessionError(401, "x") instanceof AppError)
+    assert.ok(!(new AppError(403, "x") instanceof SessionError))
   })
 })
